@@ -33,8 +33,11 @@ export class MeshEditor {
   // Active editable target
   private targetMesh: THREE.Mesh | null = null;
   private isEditMode = true;
-  private activeFilter: SelectionFilter = 'VERTEX';
   private activeGizmoMode: GizmoMode = 'translate';
+
+  // Hover states
+  private hoveredElement: { type: SelectionFilter; index: number } | null = null;
+  private hoverHelper: THREE.Object3D | null = null;
 
   // Geometry indexing data
   private uniqueVertices: UniqueVertex[] = [];
@@ -97,6 +100,8 @@ export class MeshEditor {
 
   private disableEditMode() {
     this.clearSelection();
+    this.hoveredElement = null;
+    this.removeHoverHelper();
     this.vertexHandlesGroup.clear();
     this.transformControls.detach();
   }
@@ -322,7 +327,7 @@ export class MeshEditor {
   // Create yellow selection dots at unique vertices in Edit Mode
   private createVertexHandles() {
     this.vertexHandlesGroup.clear();
-    if (!this.targetMesh || this.activeFilter !== 'VERTEX') return;
+    if (!this.targetMesh) return;
 
     const dotGeom = new THREE.SphereGeometry(2.5, 12, 12);
     const dotMat = new THREE.MeshBasicMaterial({ color: 0xfbbf24 }); // Amber
@@ -374,7 +379,7 @@ export class MeshEditor {
   }
 
   private setupMouseEvents() {
-    // Left click raycasts selection in Edit Mode
+    // Left click selects the currently hovered element
     this.canvas.addEventListener('click', (e) => {
       if (this.wasDragging) {
         this.wasDragging = false;
@@ -383,11 +388,32 @@ export class MeshEditor {
 
       if (e.button !== 0 || !this.isEditMode || !this.targetMesh || this.isDragging) return;
 
+      if (this.hoveredElement) {
+        this.selectElement(this.hoveredElement.type, this.hoveredElement.index);
+      } else {
+        this.clearSelection();
+      }
+    });
+
+    // Pointer move tracks cursor for proximity highlighting
+    this.canvas.addEventListener('pointermove', (e) => {
+      if (this.isDragging || !this.isEditMode || !this.targetMesh) return;
+
       const rect = this.canvas.getBoundingClientRect();
       this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
-      this.raycastSelection();
+      const prox = this.getProximityElement();
+      if (!this.hoveredElement || !prox || this.hoveredElement.type !== prox.type || this.hoveredElement.index !== prox.index) {
+        this.hoveredElement = prox;
+        this.createHoverHelper();
+      }
+    });
+
+    // Clear hover indicators when leaving the canvas
+    this.canvas.addEventListener('pointerleave', () => {
+      this.hoveredElement = null;
+      this.removeHoverHelper();
     });
   }
 
@@ -397,31 +423,8 @@ export class MeshEditor {
       if (btn) btn.addEventListener('click', callback);
     };
 
-    bindBtn('btn-filter-vertex', () => this.setSelectionFilter('VERTEX'));
-    bindBtn('btn-filter-edge', () => this.setSelectionFilter('EDGE'));
-    bindBtn('btn-filter-face', () => this.setSelectionFilter('FACE'));
-
     bindBtn('btn-gizmo-translate', () => this.setGizmoMode('translate'));
     bindBtn('btn-gizmo-rotate', () => this.setGizmoMode('rotate'));
-  }
-
-  private setSelectionFilter(filter: SelectionFilter) {
-    if (this.activeFilter === filter) return;
-    this.activeFilter = filter;
-
-    const filters: SelectionFilter[] = ['VERTEX', 'EDGE', 'FACE'];
-    filters.forEach(f => {
-      const btn = document.getElementById(`btn-filter-${f.toLowerCase()}`);
-      if (btn) btn.classList.remove('active');
-    });
-
-    const activeBtn = document.getElementById(`btn-filter-${filter.toLowerCase()}`);
-    if (activeBtn) activeBtn.classList.add('active');
-
-    this.clearSelection();
-    this.createVertexHandles();
-
-    this.updateStatusText(`Selection Filter: ${filter}. Click to select.`);
   }
 
   private setGizmoMode(mode: GizmoMode) {
@@ -440,76 +443,102 @@ export class MeshEditor {
     this.transformControls.setMode(mode);
   }
 
-  // Selection raycasting engine
-  private raycastSelection() {
+  // 2D distance from a point to a line segment in screen pixels
+  private distanceToSegment2D(mx: number, my: number, x0: number, y0: number, x1: number, y1: number): number {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq === 0) return Math.hypot(mx - x0, my - y0);
+    
+    let t = ((mx - x0) * dx + (my - y0) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(mx - (x0 + t * dx), my - (y0 + t * dy));
+  }
+
+  // Hover & selection proximity detection
+  private getProximityElement(): { type: SelectionFilter; index: number } | null {
+    if (!this.targetMesh) return null;
+
     const activeCamera = this.cameraController.getActiveCamera();
-    this.raycaster.setFromCamera(this.mouse, activeCamera);
+    const rect = this.canvas.getBoundingClientRect();
+    const width = rect.width;
+    const height = rect.height;
 
-    // Apply parent mesh transformations to Raycaster to operate in local coordinates
-    const invMatrix = new THREE.Matrix4().copy(this.targetMesh!.matrixWorld).invert();
+    // Convert mouse NDC to screen pixels
+    const mouseX = ((this.mouse.x + 1) * width) / 2;
+    const mouseY = ((-this.mouse.y + 1) * height) / 2;
 
-    if (this.activeFilter === 'VERTEX') {
-      // 1. Raycast against vertex handle dots
-      const intersects = this.raycaster.intersectObjects(this.vertexHandlesGroup.children);
-      if (intersects.length > 0) {
-        const selectedHandle = intersects[0].object as THREE.Mesh;
-        const uIdx = selectedHandle.userData.uniqueVertexIdx;
-        this.selectElement('VERTEX', uIdx);
-        return;
-      }
-    } else if (this.activeFilter === 'FACE' || this.activeFilter === 'EDGE') {
-      // 2. Raycast against the main mesh faces
-      const intersects = this.raycaster.intersectObject(this.targetMesh!);
-      if (intersects.length > 0) {
-        const intersection = intersects[0];
-        const faceIdx = intersection.faceIndex;
-        if (faceIdx === undefined) return;
+    // 1. Check Vertex proximity in screen space (pixels)
+    let minVertexDist = Infinity;
+    let closestVertexIdx = -1;
 
-        // Find which aggregated coplanar face this triangle index belongs to
-        const mappedFaceIdx = this.faces.findIndex(f => f.triangles.includes(faceIdx));
-        if (mappedFaceIdx === -1) return;
+    this.uniqueVertices.forEach((uv, idx) => {
+      const worldV = uv.position.clone().applyMatrix4(this.targetMesh!.matrixWorld);
+      const screenV = worldV.project(activeCamera);
+      
+      // Check if vertex is actually in front of camera frustum
+      if (screenV.z <= 1) {
+        const sx = ((screenV.x + 1) * width) / 2;
+        const sy = ((-screenV.y + 1) * height) / 2;
+        const dist = Math.hypot(sx - mouseX, sy - mouseY);
 
-        if (this.activeFilter === 'FACE') {
-          this.selectElement('FACE', mappedFaceIdx);
-        } else {
-          // EDGE Mode: find closest edge of the clicked triangle
-          const uIds = this.getTriangleUniqueVertexIds(faceIdx, this.targetMesh!.geometry.index);
-          const hitPt = intersection.point.clone().applyMatrix4(invMatrix); // Local hit point
-
-          let minD = Infinity;
-          let closestEdgeIdx = -1;
-
-          this.edges.forEach((edge, eIdx) => {
-            // Check if this edge belongs to the clicked triangle
-            const hasV0 = uIds.includes(edge.v0);
-            const hasV1 = uIds.includes(edge.v1);
-            if (hasV0 && hasV1) {
-              const p0 = this.uniqueVertices[edge.v0].position;
-              const p1 = this.uniqueVertices[edge.v1].position;
-              
-              // Calculate distance from hit point to line segment
-              const line = new THREE.Line3(p0, p1);
-              const closestPt = new THREE.Vector3();
-              line.closestPointToPoint(hitPt, true, closestPt);
-              const dist = hitPt.distanceTo(closestPt);
-
-              if (dist < minD) {
-                minD = dist;
-                closestEdgeIdx = eIdx;
-              }
-            }
-          });
-
-          if (closestEdgeIdx !== -1) {
-            this.selectElement('EDGE', closestEdgeIdx);
-          }
+        if (dist < minVertexDist) {
+          minVertexDist = dist;
+          closestVertexIdx = idx;
         }
-        return;
+      }
+    });
+
+    const VERTEX_THRESHOLD_PIXELS = 16; // 16px hover radius
+    if (closestVertexIdx !== -1 && minVertexDist < VERTEX_THRESHOLD_PIXELS) {
+      return { type: 'VERTEX', index: closestVertexIdx };
+    }
+
+    // 2. Check Edge proximity in screen space (pixels)
+    let minEdgeDist = Infinity;
+    let closestEdgeIdx = -1;
+
+    this.edges.forEach((edge, idx) => {
+      const p0 = this.uniqueVertices[edge.v0].position.clone().applyMatrix4(this.targetMesh!.matrixWorld);
+      const p1 = this.uniqueVertices[edge.v1].position.clone().applyMatrix4(this.targetMesh!.matrixWorld);
+      
+      const s0 = p0.project(activeCamera);
+      const s1 = p1.project(activeCamera);
+
+      if (s0.z <= 1 && s1.z <= 1) {
+        const sx0 = ((s0.x + 1) * width) / 2;
+        const sy0 = ((-s0.y + 1) * height) / 2;
+        const sx1 = ((s1.x + 1) * width) / 2;
+        const sy1 = ((-s1.y + 1) * height) / 2;
+
+        const dist = this.distanceToSegment2D(mouseX, mouseY, sx0, sy0, sx1, sy1);
+        if (dist < minEdgeDist) {
+          minEdgeDist = dist;
+          closestEdgeIdx = idx;
+        }
+      }
+    });
+
+    const EDGE_THRESHOLD_PIXELS = 12; // 12px hover width
+    if (closestEdgeIdx !== -1 && minEdgeDist < EDGE_THRESHOLD_PIXELS) {
+      return { type: 'EDGE', index: closestEdgeIdx };
+    }
+
+    // 3. Check Face raycasting intersection
+    this.raycaster.setFromCamera(this.mouse, activeCamera);
+    const intersects = this.raycaster.intersectObject(this.targetMesh);
+    if (intersects.length > 0) {
+      const intersection = intersects[0];
+      const faceIdx = intersection.faceIndex;
+      if (faceIdx !== undefined) {
+        const mappedFaceIdx = this.faces.findIndex(f => f.triangles.includes(faceIdx));
+        if (mappedFaceIdx !== -1) {
+          return { type: 'FACE', index: mappedFaceIdx };
+        }
       }
     }
 
-    // Clicked empty space: clear
-    this.clearSelection();
+    return null;
   }
 
   private selectElement(type: SelectionFilter, index: number) {
@@ -702,6 +731,132 @@ export class MeshEditor {
     this.vertexHandlesGroup.children.forEach(child => {
       const handle = child as THREE.Mesh;
       (handle.material as THREE.MeshBasicMaterial).color.set(0xfbbf24);
+    });
+  }
+
+  private createHoverHelper() {
+    this.removeHoverHelper();
+    if (!this.targetMesh || !this.hoveredElement || this.hoveredElement.index === -1) return;
+
+    const { type, index } = this.hoveredElement;
+
+    // Do not hover if the element is already selected
+    if (this.selectedType === type && this.selectedId === index) return;
+
+    if (type === 'VERTEX') {
+      // Color the handle orange to indicate hover
+      this.vertexHandlesGroup.children.forEach(child => {
+        const handle = child as THREE.Mesh;
+        if (handle.userData.uniqueVertexIdx === index) {
+          (handle.material as THREE.MeshBasicMaterial).color.set(0xf59e0b); // Orange hover
+        }
+      });
+    } else if (type === 'EDGE') {
+      // Draw a thinner, semi-transparent white cylinder for hover preview
+      const edge = this.edges[index];
+      const p0 = this.uniqueVertices[edge.v0].position;
+      const p1 = this.uniqueVertices[edge.v1].position;
+
+      const distance = p0.distanceTo(p1);
+      const midpoint = new THREE.Vector3().addVectors(p0, p1).multiplyScalar(0.5);
+      const direction = new THREE.Vector3().subVectors(p1, p0).normalize();
+      
+      const alignAxis = new THREE.Vector3(0, 1, 0);
+      const quaternion = new THREE.Quaternion().setFromUnitVectors(alignAxis, direction);
+
+      const geom = new THREE.CylinderGeometry(0.6, 0.6, distance, 6);
+      const hoverMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.4,
+        depthTest: false
+      });
+      const lineMesh = new THREE.Mesh(geom, hoverMat);
+      lineMesh.position.copy(midpoint);
+      lineMesh.quaternion.copy(quaternion);
+      lineMesh.renderOrder = 3;
+      
+      this.targetMesh.add(lineMesh);
+      this.hoverHelper = lineMesh;
+    } else if (type === 'FACE') {
+      // Draw a softer white overlay for face hover preview
+      const face = this.faces[index];
+      const geom = new THREE.BufferGeometry();
+      
+      const vertices: number[] = [];
+      const positionAttr = this.targetMesh.geometry.attributes.position;
+      const indexAttr = this.targetMesh.geometry.index;
+
+      face.triangles.forEach(triIdx => {
+        let idx0 = triIdx * 3;
+        let idx1 = triIdx * 3 + 1;
+        let idx2 = triIdx * 3 + 2;
+
+        if (indexAttr) {
+          idx0 = indexAttr.getX(idx0);
+          idx1 = indexAttr.getX(idx1);
+          idx2 = indexAttr.getX(idx2);
+        }
+
+        const p0 = new THREE.Vector3().fromBufferAttribute(positionAttr, idx0);
+        const p1 = new THREE.Vector3().fromBufferAttribute(positionAttr, idx1);
+        const p2 = new THREE.Vector3().fromBufferAttribute(positionAttr, idx2);
+
+        vertices.push(p0.x, p0.y, p0.z);
+        vertices.push(p1.x, p1.y, p1.z);
+        vertices.push(p2.x, p2.y, p2.z);
+      });
+
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+      geom.computeVertexNormals();
+
+      const hoverFaceMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+        transparent: true,
+        opacity: 0.3
+      });
+      
+      const mesh = new THREE.Mesh(geom, hoverFaceMat);
+      mesh.renderOrder = 3;
+      this.targetMesh.add(mesh);
+      this.hoverHelper = mesh;
+    }
+  }
+
+  private removeHoverHelper() {
+    if (this.hoverHelper) {
+      if (this.hoverHelper.parent) {
+        this.hoverHelper.parent.remove(this.hoverHelper);
+      }
+      
+      // Dispose geometry and material to prevent WebGL memory leaks
+      if ((this.hoverHelper as any).geometry) {
+        (this.hoverHelper as any).geometry.dispose();
+      }
+      if ((this.hoverHelper as any).material) {
+        const mat = (this.hoverHelper as any).material;
+        if (Array.isArray(mat)) {
+          mat.forEach((m: any) => m.dispose());
+        } else {
+          mat.dispose();
+        }
+      }
+      this.hoverHelper = null;
+    }
+
+    // Reset vertex handle colors (except the selected one, which stays cyan)
+    this.vertexHandlesGroup.children.forEach(child => {
+      const handle = child as THREE.Mesh;
+      const uIdx = handle.userData.uniqueVertexIdx;
+      if (this.selectedType === 'VERTEX' && this.selectedId === uIdx) {
+        (handle.material as THREE.MeshBasicMaterial).color.set(0x06b6d4); // Selected Cyan
+      } else {
+        (handle.material as THREE.MeshBasicMaterial).color.set(0xfbbf24); // Inactive Amber
+      }
     });
   }
 
