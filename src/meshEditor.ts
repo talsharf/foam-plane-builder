@@ -55,6 +55,7 @@ export class MeshEditor {
 
   // Drag states
   private isDragging = false;
+  private wasDragging = false;
   private initialVertexPositions: THREE.Vector3[] = []; // Cached positions before drag start
   private affectedUniqueVertexIds: number[] = [];       // Unique vertex IDs modified by active transform
 
@@ -339,6 +340,7 @@ export class MeshEditor {
       } else {
         // Run planarity enforcer upon releasing mouse
         this.enforcePlanarity();
+        this.wasDragging = true;
       }
     });
 
@@ -353,6 +355,11 @@ export class MeshEditor {
   private setupMouseEvents() {
     // Left click raycasts selection in Edit Mode
     this.canvas.addEventListener('click', (e) => {
+      if (this.wasDragging) {
+        this.wasDragging = false;
+        return;
+      }
+
       if (e.button !== 0 || !this.isEditMode || !this.targetMesh || this.isDragging) return;
 
       const rect = this.canvas.getBoundingClientRect();
