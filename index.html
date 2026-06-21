@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Foam Plane Builder CAD</title>
+  <!-- Google Fonts: Outfit for premium UI typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- FontAwesome for standard CAD icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- Linking style.css (fixed to ensure correct styling loads) -->
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <!-- Fullscreen 3D Canvas -->
+  <canvas id="scratchpad-canvas"></canvas>
+
+  <!-- Integrated Top HUD Toolbar -->
+  <div class="hud-panel top-hud">
+    <!-- Camera View Group -->
+    <div class="hud-group">
+      <button id="btn-view-free" class="hud-btn active" title="Free 3D Camera [Esc]"><i class="fa-solid fa-cube"></i> 3D</button>
+      <div class="hud-divider"></div>
+      <button id="btn-view-top" class="hud-btn" title="Top View XZ [7]"><i class="fa-solid fa-align-justify fa-rotate-90"></i> Top</button>
+      <button id="btn-view-side" class="hud-btn" title="Side View YZ [3]"><i class="fa-solid fa-align-left"></i> Side</button>
+      <button id="btn-view-front" class="hud-btn" title="Front View XY [1]"><i class="fa-solid fa-align-center"></i> Front</button>
+    </div>
+    <div class="hud-divider"></div>
+    <!-- Projection Toggle -->
+    <div class="hud-group">
+      <button id="btn-proj-toggle" class="hud-btn" title="Toggle Perspective / Orthographic [5]"><i class="fa-solid fa-eye"></i> <span id="proj-text">Persp</span></button>
+    </div>
+    <div class="hud-divider"></div>
+    <!-- Shading Modes -->
+    <div class="hud-group">
+      <button id="btn-shade-solid" class="hud-btn active" title="Solid Shading Mode"><i class="fa-solid fa-circle"></i> Solid</button>
+      <button id="btn-shade-wire" class="hud-btn" title="Wireframe Mode"><i class="fa-solid fa-circle-nodes"></i> Wire</button>
+      <button id="btn-shade-xray" class="hud-btn" title="X-Ray Mode (50% Translucency)"><i class="fa-solid fa-square-envelope"></i> X-Ray</button>
+    </div>
+    <div class="hud-divider"></div>
+    <!-- CAD Drafting Tools -->
+    <div class="hud-group">
+      <button id="btn-tool-select" class="hud-btn active" title="Select / Transform Mode"><i class="fa-solid fa-arrow-pointer"></i> Select</button>
+      <button id="btn-tool-measure" class="hud-btn" title="Tape Measure Tool"><i class="fa-solid fa-ruler"></i> Measure</button>
+    </div>
+  </div>
+
+  <!-- Bottom Panel (Expanded Textual Data & Coordinates) -->
+  <div class="bottom-panel">
+    <!-- Active Tool Status & Instructions -->
+    <div class="panel-section section-left">
+      <div class="section-title"><i class="fa-solid fa-circle-info text-accent"></i> System Status</div>
+      <div id="tool-display" class="section-body">Select Mode Active</div>
+    </div>
+    
+    <!-- Coordinate HUD readout -->
+    <div class="panel-section section-center">
+      <div class="section-title"><i class="fa-solid fa-location-crosshairs"></i> Grid Coordinates</div>
+      <div class="coords-row">
+        <div class="coord-item">
+          <span class="coordinate-axis text-red">X:</span> <span id="coord-x" class="coordinate-val">0.00</span><span class="coordinate-unit">mm</span>
+        </div>
+        <div class="coord-item">
+          <span class="coordinate-axis text-green">Y:</span> <span id="coord-y" class="coordinate-val">0.00</span><span class="coordinate-unit">mm</span>
+        </div>
+        <div class="coord-item">
+          <span class="coordinate-axis text-blue">Z:</span> <span id="coord-z" class="coordinate-val">0.00</span><span class="coordinate-unit">mm</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Plane Model Metadata -->
+    <div class="panel-section section-right">
+      <div class="section-title"><i class="fa-solid fa-plane"></i> Model Dimensions (Depron Reference)</div>
+      <div class="metadata-row">
+        <span>Fuselage: 300mm</span>
+        <span class="metadata-divider">|</span>
+        <span>Wingspan: 600mm</span>
+        <span class="metadata-divider">|</span>
+        <span>Foam: 5mm</span>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,238 @@
+/* Core reset */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  user-select: none;
+}
+
+body, html {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background-color: #0e0e11;
+  font-family: 'Outfit', sans-serif;
+  color: #e2e8f0;
+}
+
+/* Canvas styling */
+#scratchpad-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  z-index: 1;
+}
+
+/* Glassmorphic floating panels */
+.hud-panel {
+  position: absolute;
+  background: rgba(20, 22, 28, 0.75);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  z-index: 10;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.hud-panel:hover {
+  border-color: rgba(6, 182, 212, 0.3);
+  box-shadow: 0 8px 32px 0 rgba(6, 182, 212, 0.12);
+}
+
+/* Top Viewport HUD - widened to support all merged buttons */
+.top-hud {
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 48px;
+  max-width: 95vw;
+}
+
+/* Common button styling */
+.hud-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #94a3b8;
+  font-family: 'Outfit', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+}
+
+/* Button states */
+.hud-btn:hover {
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.hud-btn.active {
+  color: #06b6d4; /* Neon cyan */
+  background: rgba(6, 182, 212, 0.12);
+  border-color: rgba(6, 182, 212, 0.3);
+  box-shadow: 0 0 8px 0 rgba(6, 182, 212, 0.15);
+  font-weight: 600;
+}
+
+/* Panel Dividers */
+.hud-divider {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.hud-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Expanded Taller Bottom Panel */
+.bottom-panel {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100vw;
+  height: 80px;
+  background: rgba(15, 17, 22, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 1fr;
+  padding: 10px 24px;
+  z-index: 10;
+  box-shadow: 0 -4px 32px rgba(0, 0, 0, 0.3);
+}
+
+/* Column structures inside the bottom panel */
+.panel-section {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 100%;
+}
+
+.section-left {
+  align-items: flex-start;
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+  padding-right: 16px;
+}
+
+.section-center {
+  align-items: center;
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+  padding: 0 16px;
+}
+
+.section-right {
+  align-items: flex-end;
+  padding-left: 16px;
+}
+
+/* Text layouts */
+.section-title {
+  font-size: 11px;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.section-body {
+  font-size: 13px;
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+/* Coordinate row grids */
+.coords-row {
+  display: flex;
+  gap: 24px;
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.coord-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.coordinate-axis {
+  font-weight: bold;
+}
+.coordinate-val {
+  color: #f8fafc;
+  min-width: 60px;
+  text-align: right;
+}
+.coordinate-unit {
+  color: #475569;
+}
+
+/* Metadata row */
+.metadata-row {
+  display: flex;
+  gap: 12px;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.metadata-divider {
+  color: #334155;
+}
+
+/* Axis accent colors */
+.text-red {
+  color: #ef4444 !important; /* X-Axis */
+}
+.text-green {
+  color: #22c55e !important; /* Y-Axis */
+}
+.text-blue {
+  color: #3b82f6 !important; /* Z-Axis */
+}
+.text-accent {
+  color: #06b6d4 !important; /* Cyan info */
+}
+
+/* Tape Measure Billboard styling */
+.measure-billboard {
+  position: absolute;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  color: #fbbf24;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  pointer-events: none;
+  z-index: 5;
+  transform: translate(-50%, -100%);
+  margin-top: -8px;
+  white-space: nowrap;
+}

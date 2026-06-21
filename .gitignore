@@ -1,0 +1,11 @@
+# Dependency directories
+node_modules/
+
+# Build outputs
+dist/
+
+# Local configuration/state files
+.local/
+*.log
+.DS_Store
+Thumbs.db
