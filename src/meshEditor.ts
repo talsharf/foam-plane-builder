@@ -32,7 +32,7 @@ export class MeshEditor {
 
   // Active editable target
   private targetMesh: THREE.Mesh | null = null;
-  private isEditMode = false;
+  private isEditMode = true;
   private activeFilter: SelectionFilter = 'VERTEX';
   private activeGizmoMode: GizmoMode = 'translate';
 
@@ -87,31 +87,10 @@ export class MeshEditor {
   // Set the mesh to edit
   public setTargetMesh(mesh: THREE.Mesh | null) {
     this.targetMesh = mesh;
-    if (this.isEditMode) {
-      this.rebuildEditMode();
-    }
-  }
-
-  public toggleEditMode() {
-    this.isEditMode = !this.isEditMode;
-
-    const btn = document.getElementById('btn-edit-toggle');
-    const toolsGroup = document.getElementById('edit-tools-group');
-
-    if (btn) {
-      if (this.isEditMode) btn.classList.add('active');
-      else btn.classList.remove('active');
-    }
-
-    if (toolsGroup) {
-      toolsGroup.style.display = this.isEditMode ? 'flex' : 'none';
-    }
-
-    if (this.isEditMode) {
-      this.rebuildEditMode();
-      this.updateStatusText("Edit Mode Enabled. Select a vertex, edge, or face.");
+    this.rebuildEditMode();
+    if (mesh) {
+      this.updateStatusText("Edit Mode Active. Select a vertex, edge, or face.");
     } else {
-      this.disableEditMode();
       this.updateStatusText("Select Mode Active");
     }
   }
@@ -275,6 +254,42 @@ export class MeshEditor {
         normal: faceNormal
       });
     }
+
+    // 4. Filter out diagonal/internal edges of coplanar faces so they are not selectable
+    const indicesAttr = geom.index;
+    const filteredEdges: Edge[] = [];
+
+    this.edges.forEach(edge => {
+      // Find all triangles that contain this edge
+      const sharingTriangles: number[] = [];
+      for (let t = 0; t < triangleCount; t++) {
+        const uIds = this.getTriangleUniqueVertexIds(t, indicesAttr);
+        if (uIds.includes(edge.v0) && uIds.includes(edge.v1)) {
+          sharingTriangles.push(t);
+        }
+      }
+
+      // Find the face index for each sharing triangle
+      const sharingFaceIndices = sharingTriangles.map(triIdx => {
+        return this.faces.findIndex(f => f.triangles.includes(triIdx));
+      });
+
+      // If all sharing triangles belong to the same face, it's an internal/diagonal edge
+      let isInternal = false;
+      if (sharingFaceIndices.length > 1) {
+        const firstFaceIdx = sharingFaceIndices[0];
+        const allSameFace = sharingFaceIndices.every(faceIdx => faceIdx === firstFaceIdx && faceIdx !== -1);
+        if (allSameFace) {
+          isInternal = true;
+        }
+      }
+
+      if (!isInternal) {
+        filteredEdges.push(edge);
+      }
+    });
+
+    this.edges = filteredEdges;
   }
 
   private getUniqueVertexIndex(bufferIdx: number): number {
@@ -381,8 +396,6 @@ export class MeshEditor {
       const btn = document.getElementById(id);
       if (btn) btn.addEventListener('click', callback);
     };
-
-    bindBtn('btn-edit-toggle', () => this.toggleEditMode());
 
     bindBtn('btn-filter-vertex', () => this.setSelectionFilter('VERTEX'));
     bindBtn('btn-filter-edge', () => this.setSelectionFilter('EDGE'));
@@ -591,21 +604,29 @@ export class MeshEditor {
         }
       });
     } else if (this.selectedType === 'EDGE') {
-      // Draw bold white line along edge
+      // Draw bold white 3D cylinder along edge to guarantee thickness across WebGL platforms
       const edge = this.edges[this.selectedId];
       const p0 = this.uniqueVertices[edge.v0].position;
       const p1 = this.uniqueVertices[edge.v1].position;
 
-      const geom = new THREE.BufferGeometry().setFromPoints([p0, p1]);
-      const boldWhiteLineMat = new THREE.LineBasicMaterial({
+      const distance = p0.distanceTo(p1);
+      const midpoint = new THREE.Vector3().addVectors(p0, p1).multiplyScalar(0.5);
+      const direction = new THREE.Vector3().subVectors(p1, p0).normalize();
+      
+      const alignAxis = new THREE.Vector3(0, 1, 0);
+      const quaternion = new THREE.Quaternion().setFromUnitVectors(alignAxis, direction);
+
+      const geom = new THREE.CylinderGeometry(1.2, 1.2, distance, 6);
+      const boldWhiteMat = new THREE.MeshBasicMaterial({
         color: 0xffffff,
-        linewidth: 10,
         depthTest: false
       });
-      const line = new THREE.Line(geom, boldWhiteLineMat);
-      line.renderOrder = 2;
-      this.targetMesh.add(line);
-      this.highlightHelper = line;
+      const lineMesh = new THREE.Mesh(geom, boldWhiteMat);
+      lineMesh.position.copy(midpoint);
+      lineMesh.quaternion.copy(quaternion);
+      lineMesh.renderOrder = 2;
+      this.targetMesh.add(lineMesh);
+      this.highlightHelper = lineMesh;
     } else if (this.selectedType === 'FACE') {
       // Draw face in white overlay
       const face = this.faces[this.selectedId];
@@ -828,6 +849,9 @@ export class MeshEditor {
     if (this.selectedId !== -1) {
       this.createHighlightHelper();
     }
+
+    // Rebuild wireframe edge lines to match the deformed geometry
+    this.cameraController.rebuildEdgesHelper(this.targetMesh);
   }
 
   private updateStatusText(text: string) {

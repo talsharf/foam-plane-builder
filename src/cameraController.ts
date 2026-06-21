@@ -313,6 +313,28 @@ export class CameraController {
     this.applyShadingMode(mode);
   }
 
+  public rebuildEdgesHelper(mesh: THREE.Mesh) {
+    let helper = mesh.getObjectByName('edgesHelper') as THREE.LineSegments | undefined;
+    if (helper) {
+      mesh.remove(helper);
+      helper.geometry.dispose();
+      if (Array.isArray(helper.material)) {
+        helper.material.forEach(m => m.dispose());
+      } else {
+        helper.material.dispose();
+      }
+    }
+    
+    if (this.currentShadingMode === 'WIREFRAME' || this.currentShadingMode === 'XRAY') {
+      const edgesGeom = new THREE.EdgesGeometry(mesh.geometry);
+      const color = this.currentShadingMode === 'WIREFRAME' ? 0xf8fafc : 0x64748b;
+      const edgesMat = new THREE.LineBasicMaterial({ color: color, linewidth: 1.5 });
+      const newHelper = new THREE.LineSegments(edgesGeom, edgesMat);
+      newHelper.name = 'edgesHelper';
+      mesh.add(newHelper);
+    }
+  }
+
   private applyShadingMode(mode: ShadingMode) {
     this.testMeshes.forEach(mesh => {
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
@@ -320,17 +342,18 @@ export class CameraController {
         if (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial) {
           switch (mode) {
             case 'WIREFRAME':
-              mat.wireframe = true;
-              mat.transparent = false;
-              mat.opacity = 1.0;
+              mat.visible = false;
+              mat.wireframe = false;
               break;
             case 'XRAY':
+              mat.visible = true;
               mat.wireframe = false;
               mat.transparent = true;
               mat.opacity = 0.4;
               break;
             case 'SOLID':
             default:
+              mat.visible = true;
               mat.wireframe = false;
               mat.transparent = false;
               mat.opacity = 1.0;
@@ -339,6 +362,8 @@ export class CameraController {
           mat.needsUpdate = true;
         }
       });
+
+      this.rebuildEdgesHelper(mesh);
     });
   }
 }
