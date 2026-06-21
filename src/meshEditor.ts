@@ -591,18 +591,18 @@ export class MeshEditor {
         }
       });
     } else if (this.selectedType === 'EDGE') {
-      // Draw bold black line along edge
+      // Draw bold white line along edge
       const edge = this.edges[this.selectedId];
       const p0 = this.uniqueVertices[edge.v0].position;
       const p1 = this.uniqueVertices[edge.v1].position;
 
       const geom = new THREE.BufferGeometry().setFromPoints([p0, p1]);
-      const boldBlackLineMat = new THREE.LineBasicMaterial({
-        color: 0x000000,
-        linewidth: 6,
+      const boldWhiteLineMat = new THREE.LineBasicMaterial({
+        color: 0xffffff,
+        linewidth: 10,
         depthTest: false
       });
-      const line = new THREE.Line(geom, boldBlackLineMat);
+      const line = new THREE.Line(geom, boldWhiteLineMat);
       line.renderOrder = 2;
       this.targetMesh.add(line);
       this.highlightHelper = line;
