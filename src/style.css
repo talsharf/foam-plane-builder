@@ -257,3 +257,44 @@ body, html {
   cursor: not-allowed;
   pointer-events: none;
 }
+
+/* Glassmorphic Select Dropdown styling */
+.hud-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.hud-select {
+  background: rgba(30, 41, 59, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+  font-family: 'Outfit', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.hud-select:hover {
+  background: rgba(30, 41, 59, 0.8);
+  border-color: rgba(6, 182, 212, 0.3);
+}
+
+.hud-select:focus {
+  border-color: #06b6d4;
+  box-shadow: 0 0 8px 0 rgba(6, 182, 212, 0.15);
+}
+
+.hud-select option {
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 8px;
+}

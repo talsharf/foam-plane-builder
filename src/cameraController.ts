@@ -29,6 +29,7 @@ export class CameraController {
 
   // Reference meshes for shading tests
   private testMeshes: THREE.Mesh[] = [];
+  private assemblyManager: any = null;
 
   constructor(
     perspCamera: THREE.PerspectiveCamera,
@@ -54,7 +55,15 @@ export class CameraController {
   // Register meshes to apply shading modes to
   public registerTestMeshes(meshes: THREE.Mesh[]) {
     this.testMeshes = meshes;
-    this.applyShadingMode(this.currentShadingMode);
+    this.applyShadingMode();
+  }
+
+  public setAssemblyManager(assemblyManager: any) {
+    this.assemblyManager = assemblyManager;
+  }
+
+  public getCurrentShadingMode(): ShadingMode {
+    return this.currentShadingMode;
   }
 
   // Intercepts middle mouse click and binds OrbitControls
@@ -310,7 +319,7 @@ export class CameraController {
     const activeBtn = document.getElementById(`btn-shade-${mode.toLowerCase()}`);
     if (activeBtn) activeBtn.classList.add('active');
 
-    this.applyShadingMode(mode);
+    this.applyShadingMode();
   }
 
   public rebuildEdgesHelper(mesh: THREE.Mesh) {
@@ -335,35 +344,13 @@ export class CameraController {
     }
   }
 
-  private applyShadingMode(mode: ShadingMode) {
+  private applyShadingMode() {
     this.testMeshes.forEach(mesh => {
-      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      materials.forEach(mat => {
-        if (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial) {
-          switch (mode) {
-            case 'WIREFRAME':
-              mat.visible = false;
-              mat.wireframe = false;
-              break;
-            case 'XRAY':
-              mat.visible = true;
-              mat.wireframe = false;
-              mat.transparent = true;
-              mat.opacity = 0.4;
-              break;
-            case 'SOLID':
-            default:
-              mat.visible = true;
-              mat.wireframe = false;
-              mat.transparent = false;
-              mat.opacity = 1.0;
-              break;
-          }
-          mat.needsUpdate = true;
-        }
-      });
-
       this.rebuildEdgesHelper(mesh);
     });
+
+    if (this.assemblyManager) {
+      this.assemblyManager.updateComponentMaterials();
+    }
   }
 }

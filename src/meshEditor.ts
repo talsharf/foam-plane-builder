@@ -6,18 +6,18 @@ import { CameraController } from './cameraController';
 export type SelectionFilter = 'VERTEX' | 'EDGE' | 'FACE';
 export type GizmoMode = 'translate' | 'rotate' | 'scale';
 
-interface UniqueVertex {
+export interface UniqueVertex {
   position: THREE.Vector3;
   indices: number[]; // All duplicate vertex indices in the buffer attribute (for normal splitting)
 }
 
-interface Edge {
+export interface Edge {
   id: string;
   v0: number; // Unique vertex index
   v1: number; // Unique vertex index
 }
 
-interface Face {
+export interface Face {
   id: string;
   uniqueVertexIds: number[]; // Unique vertex indices forming the face boundary
   triangles: number[];       // Indices of triangles in the geometry index belonging to this face
@@ -85,6 +85,10 @@ export class MeshEditor {
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2();
 
+  // Assembly manager hook and geometry change callback
+  private assemblyManager: any = null;
+  public onGeometryChanged?: () => void;
+
   constructor(
     scene: THREE.Scene,
     cameraController: CameraController,
@@ -105,6 +109,10 @@ export class MeshEditor {
     this.setupTransformControls();
     this.setupMouseEvents();
     this.setupUIBindings();
+  }
+
+  public setAssemblyManager(assemblyManager: any) {
+    this.assemblyManager = assemblyManager;
   }
 
   // Set the mesh to edit
@@ -130,20 +138,42 @@ export class MeshEditor {
     this.disableEditMode();
     if (!this.targetMesh) return;
 
-    this.indexGeometry();
+    if (this.assemblyManager) {
+      const comp = this.assemblyManager.getComponentByMesh(this.targetMesh);
+      if (comp) {
+        this.uniqueVertices = comp.indexedGeometry.uniqueVertices;
+        this.edges = comp.indexedGeometry.edges;
+        this.faces = comp.indexedGeometry.faces;
+      } else {
+        this.indexGeometry();
+      }
+    } else {
+      this.indexGeometry();
+    }
+    
     this.createVertexHandles();
   }
 
   // Analysis of buffer geometry: merges split vertices, builds edges and faces
   private indexGeometry() {
     if (!this.targetMesh) return;
-    const geom = this.targetMesh.geometry;
-    const posAttr = geom.attributes.position;
-    if (!posAttr) return;
+    const result = MeshEditor.indexMeshGeometry(this.targetMesh);
+    this.uniqueVertices = result.uniqueVertices;
+    this.edges = result.edges;
+    this.faces = result.faces;
+  }
 
-    this.uniqueVertices = [];
-    this.edges = [];
-    this.faces = [];
+  // Analysis of buffer geometry (static helper for AssemblyManager caching)
+  public static indexMeshGeometry(mesh: THREE.Mesh): { uniqueVertices: UniqueVertex[]; edges: Edge[]; faces: Face[]; } {
+    const geom = mesh.geometry;
+    const posAttr = geom.attributes.position;
+    if (!posAttr) {
+      return { uniqueVertices: [], edges: [], faces: [] };
+    }
+
+    const uniqueVertices: UniqueVertex[] = [];
+    let edges: Edge[] = [];
+    const faces: Face[] = [];
 
     const epsilon = 0.01;
 
@@ -154,22 +184,49 @@ export class MeshEditor {
       
       // Look for match
       let found = -1;
-      for (let j = 0; j < this.uniqueVertices.length; j++) {
-        if (this.uniqueVertices[j].position.distanceTo(tempV) < epsilon) {
+      for (let j = 0; j < uniqueVertices.length; j++) {
+        if (uniqueVertices[j].position.distanceTo(tempV) < epsilon) {
           found = j;
           break;
         }
       }
 
       if (found !== -1) {
-        this.uniqueVertices[found].indices.push(i);
+        uniqueVertices[found].indices.push(i);
       } else {
-        this.uniqueVertices.push({
+        uniqueVertices.push({
           position: tempV.clone(),
           indices: [i]
         });
       }
     }
+
+    const getUniqueVertexIndex = (bufferIdx: number): number => {
+      for (let i = 0; i < uniqueVertices.length; i++) {
+        if (uniqueVertices[i].indices.includes(bufferIdx)) {
+          return i;
+        }
+      }
+      return 0;
+    };
+
+    const getTriangleUniqueVertexIds = (triIdx: number, indices: THREE.BufferAttribute | null): number[] => {
+      let idx0 = triIdx * 3;
+      let idx1 = triIdx * 3 + 1;
+      let idx2 = triIdx * 3 + 2;
+
+      if (indices) {
+        idx0 = indices.getX(idx0);
+        idx1 = indices.getX(idx1);
+        idx2 = indices.getX(idx2);
+      }
+
+      return [
+        getUniqueVertexIndex(idx0),
+        getUniqueVertexIndex(idx1),
+        getUniqueVertexIndex(idx2)
+      ];
+    };
 
     // 2. Map Triangles & Extract Edges
     const indices = geom.index;
@@ -191,9 +248,9 @@ export class MeshEditor {
       }
 
       // Map to unique vertex indices
-      const u0 = this.getUniqueVertexIndex(idx0);
-      const u1 = this.getUniqueVertexIndex(idx1);
-      const u2 = this.getUniqueVertexIndex(idx2);
+      const u0 = getUniqueVertexIndex(idx0);
+      const u1 = getUniqueVertexIndex(idx1);
+      const u2 = getUniqueVertexIndex(idx2);
 
       // Add Edges (sorted to avoid duplication)
       const addEdge = (a: number, b: number) => {
@@ -212,9 +269,9 @@ export class MeshEditor {
       addEdge(u2, u0);
 
       // Compute triangle normal
-      const p0 = this.uniqueVertices[u0].position;
-      const p1 = this.uniqueVertices[u1].position;
-      const p2 = this.uniqueVertices[u2].position;
+      const p0 = uniqueVertices[u0].position;
+      const p1 = uniqueVertices[u1].position;
+      const p2 = uniqueVertices[u2].position;
 
       const norm = new THREE.Vector3()
         .crossVectors(
@@ -225,7 +282,7 @@ export class MeshEditor {
       triNormals.push(norm);
     }
 
-    this.edges = Array.from(edgeMap.values());
+    edges = Array.from(edgeMap.values());
 
     // 3. Auto-group Triangles into Coplanar Faces
     const visitedTriangles = new Set<number>();
@@ -243,7 +300,7 @@ export class MeshEditor {
         const curr = queue.shift()!;
         
         // Find vertices of current triangle
-        const uCurr = this.getTriangleUniqueVertexIds(curr, indices);
+        const uCurr = getTriangleUniqueVertexIds(curr, indices);
 
         // Scan all other unvisited triangles
         for (let other = 0; other < triangleCount; other++) {
@@ -252,7 +309,7 @@ export class MeshEditor {
           // Normal comparison (coplanar check)
           const angle = faceNormal.angleTo(triNormals[other]);
           if (angle < 0.05) { // ~3 degrees tolerance
-            const uOther = this.getTriangleUniqueVertexIds(other, indices);
+            const uOther = getTriangleUniqueVertexIds(other, indices);
             
             // Check if they share at least one edge (2 shared unique vertices)
             const sharedCount = uCurr.filter(v => uOther.includes(v)).length;
@@ -268,12 +325,12 @@ export class MeshEditor {
       // Collect unique vertex IDs defining this face
       const faceVertexIdsSet = new Set<number>();
       currentFaceTriangles.forEach(triIdx => {
-        const ids = this.getTriangleUniqueVertexIds(triIdx, indices);
+        const ids = getTriangleUniqueVertexIds(triIdx, indices);
         ids.forEach(id => faceVertexIdsSet.add(id));
       });
 
-      this.faces.push({
-        id: `face_${this.faces.length}`,
+      faces.push({
+        id: `face_${faces.length}`,
         uniqueVertexIds: Array.from(faceVertexIdsSet),
         triangles: currentFaceTriangles,
         normal: faceNormal
@@ -284,11 +341,11 @@ export class MeshEditor {
     const indicesAttr = geom.index;
     const filteredEdges: Edge[] = [];
 
-    this.edges.forEach(edge => {
+    edges.forEach(edge => {
       // Find all triangles that contain this edge
       const sharingTriangles: number[] = [];
       for (let t = 0; t < triangleCount; t++) {
-        const uIds = this.getTriangleUniqueVertexIds(t, indicesAttr);
+        const uIds = getTriangleUniqueVertexIds(t, indicesAttr);
         if (uIds.includes(edge.v0) && uIds.includes(edge.v1)) {
           sharingTriangles.push(t);
         }
@@ -296,7 +353,7 @@ export class MeshEditor {
 
       // Find the face index for each sharing triangle
       const sharingFaceIndices = sharingTriangles.map(triIdx => {
-        return this.faces.findIndex(f => f.triangles.includes(triIdx));
+        return faces.findIndex(f => f.triangles.includes(triIdx));
       });
 
       // If all sharing triangles belong to the same face, it's an internal/diagonal edge
@@ -314,34 +371,7 @@ export class MeshEditor {
       }
     });
 
-    this.edges = filteredEdges;
-  }
-
-  private getUniqueVertexIndex(bufferIdx: number): number {
-    for (let i = 0; i < this.uniqueVertices.length; i++) {
-      if (this.uniqueVertices[i].indices.includes(bufferIdx)) {
-        return i;
-      }
-    }
-    return 0;
-  }
-
-  private getTriangleUniqueVertexIds(triIdx: number, indices: THREE.BufferAttribute | null): number[] {
-    let idx0 = triIdx * 3;
-    let idx1 = triIdx * 3 + 1;
-    let idx2 = triIdx * 3 + 2;
-
-    if (indices) {
-      idx0 = indices.getX(idx0);
-      idx1 = indices.getX(idx1);
-      idx2 = indices.getX(idx2);
-    }
-
-    return [
-      this.getUniqueVertexIndex(idx0),
-      this.getUniqueVertexIndex(idx1),
-      this.getUniqueVertexIndex(idx2)
-    ];
+    return { uniqueVertices, edges: filteredEdges, faces };
   }
 
   // Create selection dots at unique vertices in Edit Mode
@@ -1063,6 +1093,7 @@ export class MeshEditor {
 
     this.updateMeshGeometry();
     this.updateHelpers();
+    if (this.onGeometryChanged) this.onGeometryChanged();
   }
 
   // Mathematical Planarity Enforcer (projects non-coplanar vertices onto face planes)
@@ -1132,6 +1163,7 @@ export class MeshEditor {
       this.updateMeshGeometry();
       this.updateHelpers();
       console.log(`Planarity enforced successfully in ${iterations} iterations.`);
+      if (this.onGeometryChanged) this.onGeometryChanged();
     }
   }
 
@@ -1466,6 +1498,7 @@ export class MeshEditor {
       this.updateMeshGeometry();
       this.updateScaleHandlesPositions();
       this.updateHelpers();
+      if (this.onGeometryChanged) this.onGeometryChanged();
     }
   }
 
@@ -1480,6 +1513,7 @@ export class MeshEditor {
     this.enforcePlanarity();
     this.rebuildScaleHandles();
     this.wasDragging = true;
+    if (this.onGeometryChanged) this.onGeometryChanged();
   }
 
   private updateStatusText(text: string) {
@@ -1532,6 +1566,27 @@ export class MeshEditor {
         const finalScale = scaleFactor * stateMultiplier;
         handle.scale.set(finalScale, finalScale, finalScale);
       });
+    }
+  }
+
+  public rebuildMeshHelpers(mesh: THREE.Mesh) {
+    if (this.targetMesh === mesh) {
+      // Sync vertex handles group position/rotation
+      this.vertexHandlesGroup.position.copy(this.targetMesh.position);
+      this.vertexHandlesGroup.rotation.copy(this.targetMesh.rotation);
+      
+      // Sync scale handles position/rotation
+      if (this.activeGizmoMode === 'scale') {
+        this.rebuildScaleHandles();
+      }
+      
+      // Update transform controls gizmo if active
+      if (this.selectedId !== -1) {
+        this.calculateSelectionCentroid();
+        this.dummyTransformObject.position.copy(this.selectionCentroid);
+        this.dummyTransformObject.quaternion.set(0, 0, 0, 1);
+        this.dummyTransformObject.scale.set(1, 1, 1);
+      }
     }
   }
 }

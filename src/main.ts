@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CameraController } from './cameraController';
 import { CADTools } from './cadTools';
 import { MeshEditor } from './meshEditor';
+import { AssemblyManager } from './assemblyManager';
 
 // 1. Get canvas and configure WebGLRenderer
 const canvas = document.getElementById('scratchpad-canvas') as HTMLCanvasElement;
@@ -54,6 +55,12 @@ const cameraController = new CameraController(
 const cadTools = new CADTools(scene, canvas, cameraController);
 
 const meshEditor = new MeshEditor(scene, cameraController, controls, canvas);
+
+const assemblyManager = new AssemblyManager(meshEditor);
+meshEditor.setAssemblyManager(assemblyManager);
+
+assemblyManager.setCameraController(cameraController);
+cameraController.setAssemblyManager(assemblyManager);
 
 // 6. Build Workshop Floor Grid & Helpers
 // Major Grid: 1000mm wide, subdivisions every 100mm (cyan highlight)
@@ -115,10 +122,43 @@ tail.position.set(0, 55, -120); // Sit at the rear of fuselage
 scene.add(tail);
 testMeshes.push(tail);
 
+// Register meshes with AssemblyManager
+assemblyManager.addComponent('fuselage', 'Fuselage', fuselage);
+assemblyManager.addComponent('wing', 'Wing', wing);
+assemblyManager.addComponent('tail', 'Tail', tail);
+
+// Set default anchors (Wing and Tail are anchored to the Fuselage top face)
+const fuselageComp = assemblyManager.getComponent('fuselage')!;
+const topFace = fuselageComp.indexedGeometry.faces.find(f => f.normal.y > 0.9);
+if (topFace) {
+  assemblyManager.setAnchor('wing', 'fuselage', 'FACE', topFace.id);
+  assemblyManager.setAnchor('tail', 'fuselage', 'FACE', topFace.id);
+} else {
+  assemblyManager.setAnchor('wing', 'fuselage', 'FACE', 'face_0');
+  assemblyManager.setAnchor('tail', 'fuselage', 'FACE', 'face_0');
+}
+
+// Bind UI dropdown changes to active component
+const selectComponent = document.getElementById('select-active-component') as HTMLSelectElement | null;
+if (selectComponent) {
+  selectComponent.addEventListener('change', (e) => {
+    const targetId = (e.target as HTMLSelectElement).value;
+    assemblyManager.setActiveComponent(targetId);
+    
+    // Update target meshes for select/measure tool so ghosted elements are un-selectable
+    const activeComp = assemblyManager.getComponent(targetId);
+    if (activeComp) {
+      cadTools.registerTargetMeshes([activeComp.mesh]);
+    }
+  });
+}
+
 // Register meshes for visual shading changes
 cameraController.registerTestMeshes(testMeshes);
-cadTools.registerTargetMeshes(testMeshes);
-meshEditor.setTargetMesh(fuselage);
+cadTools.registerTargetMeshes([fuselage]); // start with only active fuselage targetable for select/measure tool
+
+// Set initial active component in AssemblyManager
+assemblyManager.setActiveComponent('fuselage');
 
 // 9. Handle Resizing
 window.addEventListener('resize', () => {
@@ -156,6 +196,9 @@ function animate() {
 
   // Update mesh editor gizmos
   meshEditor.update();
+
+  // Update assembly anchors
+  assemblyManager.updateAnchors();
 
   // Render using active camera
   const activeCamera = cameraController.getActiveCamera();
