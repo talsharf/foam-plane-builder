@@ -115,6 +115,15 @@ export class MeshEditor {
     this.assemblyManager = assemblyManager;
   }
 
+  public getTargetMesh(): THREE.Mesh | null {
+    return this.targetMesh;
+  }
+
+  public getTransformControls(): any {
+    return this.transformControls;
+  }
+
+
   // Set the mesh to edit
   public setTargetMesh(mesh: THREE.Mesh | null) {
     this.targetMesh = mesh;
@@ -423,8 +432,13 @@ export class MeshEditor {
 
     // Handle gizmo movements
     this.transformControls.addEventListener('change', () => {
-      if (this.isDragging && this.targetMesh) {
-        this.applyGizmoTransform();
+      if (this.isDragging) {
+        if (this.targetMesh) {
+          this.applyGizmoTransform();
+        } else {
+          // Tier 1: Entire component dragging
+          if (this.onGeometryChanged) this.onGeometryChanged();
+        }
       }
     });
   }
@@ -456,10 +470,56 @@ export class MeshEditor {
         return;
       }
 
-      if (e.button !== 0 || !this.isEditMode || !this.targetMesh || this.isDragging || this.isDraggingScaleHandle) return;
+      if (e.button !== 0 || !this.isEditMode || this.isDragging || this.isDraggingScaleHandle) return;
 
       // If the user clicked on the gizmo, do not change selection
       if (this.transformControls && this.transformControls.axis !== null) {
+        return;
+      }
+
+      if (!this.targetMesh) {
+        // Tier 1: Assembly Selection
+        if (this.assemblyManager) {
+          const activeCamera = this.cameraController.getActiveCamera();
+          const rect = this.canvas.getBoundingClientRect();
+          this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+          this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+          this.raycaster.setFromCamera(this.mouse, activeCamera);
+
+          const meshes: THREE.Object3D[] = [];
+          this.assemblyManager.components.forEach((comp: any) => meshes.push(comp.mesh));
+          const intersects = this.raycaster.intersectObjects(meshes, true);
+          if (intersects.length > 0) {
+            const clickedMesh = intersects[0].object;
+            // Find root component mesh
+            let rootMesh: THREE.Object3D | null = clickedMesh;
+            while (rootMesh && !meshes.includes(rootMesh)) {
+              rootMesh = rootMesh.parent;
+            }
+            if (rootMesh) {
+              const comp = this.assemblyManager.getComponentByMesh(rootMesh as THREE.Mesh);
+              if (comp) {
+                // Select component as a whole and attach controls
+                this.transformControls.setMode(this.activeGizmoMode);
+                this.transformControls.attach(comp.mesh);
+                this.assemblyManager.updateComponentMaterials();
+
+                const selectEl = document.getElementById('select-active-component') as HTMLSelectElement | null;
+                if (selectEl) {
+                  selectEl.value = comp.id;
+                }
+              }
+            }
+          } else {
+            // Clicked empty space
+            this.transformControls.detach();
+            this.assemblyManager.updateComponentMaterials();
+            const selectEl = document.getElementById('select-active-component') as HTMLSelectElement | null;
+            if (selectEl) {
+              selectEl.value = '';
+            }
+          }
+        }
         return;
       }
 
@@ -467,6 +527,56 @@ export class MeshEditor {
         this.selectElement(this.hoveredElement.type, this.hoveredElement.index);
       } else {
         this.clearSelection();
+      }
+    });
+
+    // Escape key exits sub-mesh workspace mode to assembly view
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        if (this.assemblyManager && this.assemblyManager.getActiveComponentId()) {
+          this.assemblyManager.setActiveComponent(null);
+          e.preventDefault();
+        }
+      }
+    });
+
+    // Double click on component enters Tier 2, double click on empty space exits Tier 2
+    this.canvas.addEventListener('dblclick', (e) => {
+      if (e.button !== 0 || !this.isEditMode) return;
+
+      if (this.assemblyManager) {
+        const activeCamera = this.cameraController.getActiveCamera();
+        const rect = this.canvas.getBoundingClientRect();
+        this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        this.raycaster.setFromCamera(this.mouse, activeCamera);
+
+        if (!this.targetMesh) {
+          // Tier 1: Double click a component to dive in
+          const meshes: THREE.Object3D[] = [];
+          this.assemblyManager.components.forEach((comp: any) => meshes.push(comp.mesh));
+          const intersects = this.raycaster.intersectObjects(meshes, true);
+          if (intersects.length > 0) {
+            const clickedMesh = intersects[0].object;
+            let rootMesh: THREE.Object3D | null = clickedMesh;
+            while (rootMesh && !meshes.includes(rootMesh)) {
+              rootMesh = rootMesh.parent;
+            }
+            if (rootMesh) {
+              const comp = this.assemblyManager.getComponentByMesh(rootMesh as THREE.Mesh);
+              if (comp) {
+                this.transformControls.detach();
+                this.assemblyManager.setActiveComponent(comp.id);
+              }
+            }
+          }
+        } else {
+          // Tier 2: Double click empty space to exit
+          const intersects = this.raycaster.intersectObject(this.targetMesh);
+          if (intersects.length === 0) {
+            this.assemblyManager.setActiveComponent(null);
+          }
+        }
       }
     });
 
@@ -561,6 +671,13 @@ export class MeshEditor {
 
     const activeBtn = document.getElementById(`btn-gizmo-${mode}`);
     if (activeBtn) activeBtn.classList.add('active');
+
+    if (!this.targetMesh) {
+      // Tier 1: Assembly Selection Mode
+      this.clearScaleHandles();
+      this.transformControls.setMode(mode);
+      return;
+    }
 
     if (mode === 'scale') {
       this.transformControls.detach();

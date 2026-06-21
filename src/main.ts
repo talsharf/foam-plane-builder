@@ -138,27 +138,42 @@ if (topFace) {
   assemblyManager.setAnchor('tail', 'fuselage', 'FACE', 'face_0');
 }
 
+// Hook active component change to adjust measure/select tool targeting
+assemblyManager.onActiveComponentChanged = (id) => {
+  if (id) {
+    const activeComp = assemblyManager.getComponent(id);
+    if (activeComp) {
+      cadTools.registerTargetMeshes([activeComp.mesh]);
+    }
+  } else {
+    // Tier 1: All components can be targeted/measured
+    cadTools.registerTargetMeshes(testMeshes);
+  }
+};
+
 // Bind UI dropdown changes to active component
 const selectComponent = document.getElementById('select-active-component') as HTMLSelectElement | null;
 if (selectComponent) {
   selectComponent.addEventListener('change', (e) => {
     const targetId = (e.target as HTMLSelectElement).value;
-    assemblyManager.setActiveComponent(targetId);
-    
-    // Update target meshes for select/measure tool so ghosted elements are un-selectable
-    const activeComp = assemblyManager.getComponent(targetId);
-    if (activeComp) {
-      cadTools.registerTargetMeshes([activeComp.mesh]);
-    }
+    assemblyManager.setActiveComponent(targetId || null);
+  });
+}
+
+// Bind Exit Component UI button
+const exitComponentBtn = document.getElementById('btn-exit-component');
+if (exitComponentBtn) {
+  exitComponentBtn.addEventListener('click', () => {
+    assemblyManager.setActiveComponent(null);
   });
 }
 
 // Register meshes for visual shading changes
 cameraController.registerTestMeshes(testMeshes);
-cadTools.registerTargetMeshes([fuselage]); // start with only active fuselage targetable for select/measure tool
+cadTools.registerTargetMeshes(testMeshes); // In Tier 1, start with all targetable
 
-// Set initial active component in AssemblyManager
-assemblyManager.setActiveComponent('fuselage');
+// Set initial active component in AssemblyManager (Tier 1)
+assemblyManager.setActiveComponent(null);
 
 // 9. Handle Resizing
 window.addEventListener('resize', () => {

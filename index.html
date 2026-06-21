@@ -50,10 +50,12 @@
     <div class="hud-group">
       <span class="hud-label"><i class="fa-solid fa-layer-group"></i> Active:</span>
       <select id="select-active-component" class="hud-select">
+        <option value="">-- Assembly View --</option>
         <option value="fuselage">Fuselage</option>
         <option value="wing">Wing</option>
         <option value="tail">Tail</option>
       </select>
+      <button id="btn-exit-component" class="hud-btn" style="display: none;" title="Exit Component Workspace [Esc]"><i class="fa-solid fa-right-from-bracket"></i> Exit</button>
     </div>
     <div class="hud-divider"></div>
     <!-- Sub-Element selection and transform tools (Always Active) -->

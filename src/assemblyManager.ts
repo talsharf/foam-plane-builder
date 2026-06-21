@@ -23,14 +23,35 @@ export interface CADComponent {
 export class AssemblyManager {
   private components = new Map<string, CADComponent>();
   private meshEditor: MeshEditor;
-  private activeComponentId: string = '';
+  private activeComponentId: string | null = null;
   private cameraController: any = null;
+
+  public onActiveComponentChanged?: (id: string | null) => void;
 
   constructor(meshEditor: MeshEditor) {
     this.meshEditor = meshEditor;
 
     // Register callback on meshEditor
     this.meshEditor.onGeometryChanged = () => {
+      // If we are in Tier 1 (no active target mesh in editor) and dragging a component,
+      // update its relative anchor localMatrix based on the new dragged position.
+      const targetMesh = this.meshEditor.getTargetMesh();
+      const transformControls = this.meshEditor.getTransformControls();
+      if (!targetMesh && transformControls && transformControls.object) {
+        const attachedMesh = transformControls.object as THREE.Mesh;
+        const draggedComp = this.getComponentByMesh(attachedMesh);
+        if (draggedComp && draggedComp.anchor) {
+          const parent = this.components.get(draggedComp.anchor.parentId);
+          if (parent) {
+            const parentFeatureBasis = this.getFeatureBasis(parent, draggedComp.anchor.parentFeatureType, draggedComp.anchor.parentFeatureId);
+            attachedMesh.updateMatrixWorld(true);
+            const childWorldMatrix = attachedMesh.matrixWorld.clone();
+            const invParentBasis = new THREE.Matrix4().copy(parentFeatureBasis).invert();
+            draggedComp.anchor.localMatrix.multiplyMatrices(invParentBasis, childWorldMatrix);
+          }
+        }
+      }
+
       this.updateAnchors();
     };
   }
@@ -234,42 +255,70 @@ export class AssemblyManager {
     });
   }
 
-  public setActiveComponent(id: string) {
-    const comp = this.components.get(id);
-    if (!comp) {
-      console.error(`Component ${id} not found`);
-      return;
-    }
+  public setActiveComponent(id: string | null) {
     this.activeComponentId = id;
 
     // Sync HTML Select value
     const selectEl = document.getElementById('select-active-component') as HTMLSelectElement | null;
-    if (selectEl && selectEl.value !== id) {
-      selectEl.value = id;
+    if (selectEl) {
+      selectEl.value = id || '';
     }
 
-    // Set target mesh in editor
-    this.meshEditor.setTargetMesh(comp.mesh);
+    // Toggle Exit button in HUD
+    const exitBtn = document.getElementById('btn-exit-component');
+    if (exitBtn) {
+      exitBtn.style.display = id ? 'flex' : 'none';
+    }
 
-    // Update active vs ghosted component material states
+    // Update editor target mesh
+    if (id) {
+      const comp = this.components.get(id);
+      if (comp) {
+        this.meshEditor.setTargetMesh(comp.mesh);
+      }
+    } else {
+      this.meshEditor.setTargetMesh(null);
+    }
+
+    // Trigger material update (opaque vs ghosted)
     this.updateComponentMaterials();
+
+    // Trigger active component changed callback
+    if (this.onActiveComponentChanged) {
+      this.onActiveComponentChanged(id);
+    }
   }
 
-  public getActiveComponentId(): string {
+  public getActiveComponentId(): string | null {
     return this.activeComponentId;
   }
 
   public updateComponentMaterials() {
     const shadingMode = this.cameraController ? this.cameraController.getCurrentShadingMode() : 'SOLID';
+    const transformControls = this.meshEditor ? this.meshEditor.getTransformControls() : null;
 
     this.components.forEach(comp => {
       const mesh = comp.mesh;
-      const isInterfaceActive = comp.id === this.activeComponentId;
+      const isInterfaceActive = this.activeComponentId === null || comp.id === this.activeComponentId;
+      const isSelected = (this.activeComponentId === comp.id) ||
+                         (this.activeComponentId === null && transformControls && transformControls.object === mesh);
 
       // Handle standard material properties
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       materials.forEach(mat => {
         if (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial) {
+          if (isSelected) {
+            mat.color.setHex(0xffffff); // Pure white highlighting
+            if (mat instanceof THREE.MeshStandardMaterial) {
+              mat.emissive.setHex(0x333333); // Subtle glow
+            }
+          } else {
+            mat.color.setHex(0xf1f5f9); // Default foam board slate-white
+            if (mat instanceof THREE.MeshStandardMaterial) {
+              mat.emissive.setHex(0x000000);
+            }
+          }
+
           if (isInterfaceActive) {
             if (shadingMode === 'WIREFRAME') {
               mat.visible = false;
@@ -305,7 +354,11 @@ export class AssemblyManager {
         if (isInterfaceActive) {
           edgeMat.transparent = false;
           edgeMat.opacity = 1.0;
-          edgeMat.color.setHex(shadingMode === 'WIREFRAME' ? 0xf8fafc : 0x64748b);
+          if (isSelected) {
+            edgeMat.color.setHex(0xffffff); // Pure white edges for selected component
+          } else {
+            edgeMat.color.setHex(shadingMode === 'WIREFRAME' ? 0xf8fafc : 0x64748b);
+          }
         } else {
           edgeMat.transparent = true;
           edgeMat.opacity = 0.25;
