@@ -341,6 +341,12 @@ export class MeshEditor {
         // Run planarity enforcer upon releasing mouse
         this.enforcePlanarity();
         this.wasDragging = true;
+
+        // Recalculate selection centroid and update helper positions to prevent jumps
+        this.calculateSelectionCentroid();
+        this.dummyTransformObject.position.copy(this.selectionCentroid);
+        this.dummyTransformObject.quaternion.set(0, 0, 0, 1);
+        this.updateHelpers();
       }
     });
 
