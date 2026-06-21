@@ -51,6 +51,7 @@ export class MeshEditor {
 
   // Helper visual objects in 3D Scene
   private vertexHandlesGroup = new THREE.Group();
+  private scaleHandlesGroup = new THREE.Group();
   private highlightHelper: THREE.Object3D | null = null;
   private transformControls!: TransformControls;
   private dummyTransformObject = new THREE.Object3D();
@@ -61,6 +62,24 @@ export class MeshEditor {
   private wasDragging = false;
   private initialVertexPositions: THREE.Vector3[] = []; // Cached positions before drag start
   private affectedUniqueVertexIds: number[] = [];       // Unique vertex IDs modified by active transform
+
+  // Custom scaling handles visual group and state
+  private isDraggingScaleHandle = false;
+  private activeScaleHandle: THREE.Mesh | null = null;
+  private hoveredScaleHandle: THREE.Mesh | null = null;
+
+  // Custom scaling math cache
+  private initialScaleCentroid = new THREE.Vector3();
+  private initialScaleDirection = new THREE.Vector3(); // For edges
+  private initialScaleHalfLength = 0;                  // For edges
+  private draggedVertexId = -1;                        // For edges (v0 or v1)
+
+  private initialScaleU = new THREE.Vector3();         // For faces
+  private initialScaleV = new THREE.Vector3();         // For faces
+  private faceHandleType: 'corner' | 'edge' | null = null; // For faces
+  private initialHandleU = 0;                          // For faces
+  private initialHandleV = 0;                          // For faces
+  private initialFaceVerticesUV: { id: number; u: number; v: number }[] = []; // For faces
 
   // Raycasting
   private raycaster = new THREE.Raycaster();
@@ -78,6 +97,7 @@ export class MeshEditor {
     this.canvas = canvas;
 
     this.scene.add(this.vertexHandlesGroup);
+    this.scene.add(this.scaleHandlesGroup);
     this.scene.add(this.dummyTransformObject);
 
     this.elToolDisplay = document.getElementById('tool-display');
@@ -380,6 +400,25 @@ export class MeshEditor {
   }
 
   private setupMouseEvents() {
+    // Intercept clicks on our custom scaling handles
+    this.canvas.addEventListener('pointerdown', (e) => {
+      if (!this.isEditMode || !this.targetMesh || this.activeGizmoMode !== 'scale') return;
+      if (e.button !== 0) return; // Left click only
+
+      const activeCamera = this.cameraController.getActiveCamera();
+      const rect = this.canvas.getBoundingClientRect();
+      this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      this.raycaster.setFromCamera(this.mouse, activeCamera);
+      const intersects = this.raycaster.intersectObjects(this.scaleHandlesGroup.children);
+      if (intersects.length > 0) {
+        const hitHandle = intersects[0].object as THREE.Mesh;
+        this.startScaleDrag(hitHandle);
+        e.stopPropagation();
+      }
+    });
+
     // Left click selects the currently hovered element
     this.canvas.addEventListener('click', (e) => {
       if (this.wasDragging) {
@@ -387,7 +426,7 @@ export class MeshEditor {
         return;
       }
 
-      if (e.button !== 0 || !this.isEditMode || !this.targetMesh || this.isDragging) return;
+      if (e.button !== 0 || !this.isEditMode || !this.targetMesh || this.isDragging || this.isDraggingScaleHandle) return;
 
       // If the user clicked on the gizmo, do not change selection
       if (this.transformControls && this.transformControls.axis !== null) {
@@ -403,7 +442,43 @@ export class MeshEditor {
 
     // Pointer move tracks cursor for proximity highlighting
     this.canvas.addEventListener('pointermove', (e) => {
-      if (this.isDragging || !this.isEditMode || !this.targetMesh) return;
+      if (this.isDragging || this.isDraggingScaleHandle || !this.isEditMode || !this.targetMesh) return;
+
+      const rect = this.canvas.getBoundingClientRect();
+      this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      // 1. Raycast against scale handles if in scale mode
+      if (this.activeGizmoMode === 'scale' && this.scaleHandlesGroup.children.length > 0) {
+        const activeCamera = this.cameraController.getActiveCamera();
+        this.raycaster.setFromCamera(this.mouse, activeCamera);
+        const intersects = this.raycaster.intersectObjects(this.scaleHandlesGroup.children);
+        if (intersects.length > 0) {
+          const hitHandle = intersects[0].object as THREE.Mesh;
+          this.hoveredScaleHandle = hitHandle;
+          
+          this.scaleHandlesGroup.children.forEach(child => {
+            const h = child as THREE.Mesh;
+            if (h === hitHandle) {
+              (h.material as THREE.MeshBasicMaterial).color.set(0x166534); // Darker Green hover
+            } else {
+              (h.material as THREE.MeshBasicMaterial).color.set(h.userData.defaultColor);
+            }
+          });
+
+          if (this.hoveredElement) {
+            this.hoveredElement = null;
+            this.removeHoverHelper();
+          }
+          return;
+        } else {
+          this.hoveredScaleHandle = null;
+          this.scaleHandlesGroup.children.forEach(child => {
+            const h = child as THREE.Mesh;
+            ((h as THREE.Mesh).material as THREE.MeshBasicMaterial).color.set(h.userData.defaultColor);
+          });
+        }
+      }
 
       // If the cursor is hovering over the transform gizmo axes, do not update hover highlights
       if (this.transformControls && this.transformControls.axis !== null) {
@@ -413,10 +488,6 @@ export class MeshEditor {
         }
         return;
       }
-
-      const rect = this.canvas.getBoundingClientRect();
-      this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
       const prox = this.getProximityElement();
       if (!this.hoveredElement || !prox || this.hoveredElement.type !== prox.type || this.hoveredElement.index !== prox.index) {
@@ -429,6 +500,11 @@ export class MeshEditor {
     this.canvas.addEventListener('pointerleave', () => {
       this.hoveredElement = null;
       this.removeHoverHelper();
+      this.hoveredScaleHandle = null;
+      this.scaleHandlesGroup.children.forEach(child => {
+        const h = child as THREE.Mesh;
+        ((h as THREE.Mesh).material as THREE.MeshBasicMaterial).color.set(h.userData.defaultColor);
+      });
     });
   }
 
@@ -456,7 +532,16 @@ export class MeshEditor {
     const activeBtn = document.getElementById(`btn-gizmo-${mode}`);
     if (activeBtn) activeBtn.classList.add('active');
 
-    this.transformControls.setMode(mode);
+    if (mode === 'scale') {
+      this.transformControls.detach();
+      this.rebuildScaleHandles();
+    } else {
+      this.clearScaleHandles();
+      this.transformControls.setMode(mode);
+      if (this.selectedId !== -1) {
+        this.transformControls.attach(this.dummyTransformObject);
+      }
+    }
   }
 
   // 2D distance from a point to a line segment in screen pixels
@@ -579,14 +664,20 @@ export class MeshEditor {
     this.calculateSelectionCentroid();
     this.createHighlightHelper();
 
-    // Position dummy object at selection centroid and attach TransformControls
-    this.dummyTransformObject.position.copy(this.selectionCentroid);
-    this.dummyTransformObject.quaternion.set(0, 0, 0, 1);
-    this.dummyTransformObject.scale.set(1, 1, 1);
-    
-    // Sync transform mode
-    this.transformControls.setMode(this.activeGizmoMode);
-    this.transformControls.attach(this.dummyTransformObject);
+    if (this.activeGizmoMode === 'scale') {
+      this.transformControls.detach();
+      this.rebuildScaleHandles();
+    } else {
+      this.clearScaleHandles();
+      // Position dummy object at selection centroid and attach TransformControls
+      this.dummyTransformObject.position.copy(this.selectionCentroid);
+      this.dummyTransformObject.quaternion.set(0, 0, 0, 1);
+      this.dummyTransformObject.scale.set(1, 1, 1);
+      
+      // Sync transform mode
+      this.transformControls.setMode(this.activeGizmoMode);
+      this.transformControls.attach(this.dummyTransformObject);
+    }
 
     // Update status text
     let desc = "";
@@ -601,6 +692,7 @@ export class MeshEditor {
     this.selectedType = null;
     this.selectedId = -1;
     this.transformControls.detach();
+    this.clearScaleHandles();
     this.removeHighlightHelper();
 
     const rotateBtn = document.getElementById('btn-gizmo-rotate') as HTMLButtonElement | null;
@@ -652,7 +744,7 @@ export class MeshEditor {
         }
       });
     } else if (this.selectedType === 'EDGE') {
-      // Draw bold white 3D cylinder along edge to guarantee thickness across WebGL platforms
+      // Draw bold yellow 3D cylinder along edge to guarantee thickness across WebGL platforms
       const edge = this.edges[this.selectedId];
       const p0 = this.uniqueVertices[edge.v0].position;
       const p1 = this.uniqueVertices[edge.v1].position;
@@ -665,21 +757,22 @@ export class MeshEditor {
       const quaternion = new THREE.Quaternion().setFromUnitVectors(alignAxis, direction);
 
       const geom = new THREE.CylinderGeometry(1.2, 1.2, distance, 6);
-      const boldWhiteMat = new THREE.MeshBasicMaterial({
-        color: 0xffffff,
+      const boldYellowMat = new THREE.MeshBasicMaterial({
+        color: 0xfbbf24, // Yellow highlight
         depthTest: false
       });
-      const lineMesh = new THREE.Mesh(geom, boldWhiteMat);
+      const lineMesh = new THREE.Mesh(geom, boldYellowMat);
       lineMesh.position.copy(midpoint);
       lineMesh.quaternion.copy(quaternion);
       lineMesh.renderOrder = 2;
       this.targetMesh.add(lineMesh);
       this.highlightHelper = lineMesh;
     } else if (this.selectedType === 'FACE') {
-      // Draw face in white overlay
       const face = this.faces[this.selectedId];
+      const group = new THREE.Group();
+
+      // 1. Draw the face surface in semi-transparent white
       const geom = new THREE.BufferGeometry();
-      
       const vertices: number[] = [];
       const positionAttr = this.targetMesh.geometry.attributes.position;
       const indexAttr = this.targetMesh.geometry.index;
@@ -708,19 +801,51 @@ export class MeshEditor {
       geom.computeVertexNormals();
 
       const faceMat = new THREE.MeshBasicMaterial({
-        color: 0xffffff,
+        color: 0xffffff, // White overlay
         side: THREE.DoubleSide,
         polygonOffset: true,
         polygonOffsetFactor: -2,
         polygonOffsetUnits: -2,
         transparent: true,
-        opacity: 0.8
+        opacity: 0.6
       });
       
-      const mesh = new THREE.Mesh(geom, faceMat);
-      mesh.renderOrder = 2;
-      this.targetMesh.add(mesh);
-      this.highlightHelper = mesh;
+      const faceMesh = new THREE.Mesh(geom, faceMat);
+      faceMesh.renderOrder = 2;
+      group.add(faceMesh);
+
+      // 2. Draw the 4 boundary edges of the face in yellow
+      const boundaryEdges = this.edges.filter(edge => 
+        face.uniqueVertexIds.includes(edge.v0) && face.uniqueVertexIds.includes(edge.v1)
+      );
+
+      const cylinderGeom = new THREE.CylinderGeometry(1.2, 1.2, 1.0, 6);
+      const yellowMat = new THREE.MeshBasicMaterial({
+        color: 0xfbbf24, // Yellow highlight
+        depthTest: false
+      });
+
+      boundaryEdges.forEach(edge => {
+        const p0 = this.uniqueVertices[edge.v0].position;
+        const p1 = this.uniqueVertices[edge.v1].position;
+
+        const distance = p0.distanceTo(p1);
+        const midpoint = new THREE.Vector3().addVectors(p0, p1).multiplyScalar(0.5);
+        const direction = new THREE.Vector3().subVectors(p1, p0).normalize();
+        
+        const alignAxis = new THREE.Vector3(0, 1, 0);
+        const quaternion = new THREE.Quaternion().setFromUnitVectors(alignAxis, direction);
+
+        const edgeMesh = new THREE.Mesh(cylinderGeom, yellowMat);
+        edgeMesh.scale.set(1, distance, 1);
+        edgeMesh.position.copy(midpoint);
+        edgeMesh.quaternion.copy(quaternion);
+        edgeMesh.renderOrder = 3; // Render boundary lines on top of the face overlay
+        group.add(edgeMesh);
+      });
+
+      this.targetMesh.add(group);
+      this.highlightHelper = group;
     }
   }
 
@@ -730,16 +855,29 @@ export class MeshEditor {
         this.highlightHelper.parent.remove(this.highlightHelper);
       }
       
-      // Dispose geometry and material to prevent WebGL memory leaks
-      if ((this.highlightHelper as any).geometry) {
-        (this.highlightHelper as any).geometry.dispose();
-      }
-      if ((this.highlightHelper as any).material) {
-        const mat = (this.highlightHelper as any).material;
-        if (Array.isArray(mat)) {
-          mat.forEach((m: any) => m.dispose());
-        } else {
-          mat.dispose();
+      if (this.highlightHelper instanceof THREE.Group) {
+        this.highlightHelper.children.forEach(child => {
+          const mesh = child as THREE.Mesh;
+          if (mesh.geometry) mesh.geometry.dispose();
+          if (mesh.material) {
+            if (Array.isArray(mesh.material)) {
+              mesh.material.forEach(m => m.dispose());
+            } else {
+              mesh.material.dispose();
+            }
+          }
+        });
+      } else {
+        if ((this.highlightHelper as any).geometry) {
+          (this.highlightHelper as any).geometry.dispose();
+        }
+        if ((this.highlightHelper as any).material) {
+          const mat = (this.highlightHelper as any).material;
+          if (Array.isArray(mat)) {
+            mat.forEach((m: any) => m.dispose());
+          } else {
+            mat.dispose();
+          }
         }
       }
       
@@ -1026,6 +1164,11 @@ export class MeshEditor {
       handle.position.copy(this.uniqueVertices[uIdx].position);
     });
 
+    // Sync scale handles positions if in scale mode
+    if (this.activeGizmoMode === 'scale' && !this.isDraggingScaleHandle) {
+      this.rebuildScaleHandles();
+    }
+
     // Re-highlight helper geometry
     if (this.selectedId !== -1) {
       this.createHighlightHelper();
@@ -1035,10 +1178,333 @@ export class MeshEditor {
     this.cameraController.rebuildEdgesHelper(this.targetMesh);
   }
 
+  private clearScaleHandles() {
+    this.scaleHandlesGroup.children.forEach(child => {
+      const mesh = child as THREE.Mesh;
+      if (mesh.geometry) mesh.geometry.dispose();
+      if (mesh.material) {
+        if (Array.isArray(mesh.material)) {
+          mesh.material.forEach(m => m.dispose());
+        } else {
+          mesh.material.dispose();
+        }
+      }
+    });
+    this.scaleHandlesGroup.clear();
+    this.hoveredScaleHandle = null;
+    this.activeScaleHandle = null;
+  }
+
+  private rebuildScaleHandles() {
+    this.clearScaleHandles();
+    if (!this.targetMesh || this.selectedId === -1 || this.activeGizmoMode !== 'scale') return;
+
+    this.scaleHandlesGroup.position.copy(this.targetMesh.position);
+    this.scaleHandlesGroup.rotation.copy(this.targetMesh.rotation);
+
+    const boxGeom = new THREE.BoxGeometry(3.0, 3.0, 3.0); // Double sized handles
+    const handleColor = 0x22c55e; // Green
+    
+    if (this.selectedType === 'EDGE') {
+      const edge = this.edges[this.selectedId];
+      const p0 = this.uniqueVertices[edge.v0].position;
+      const p1 = this.uniqueVertices[edge.v1].position;
+
+      const handle0 = new THREE.Mesh(boxGeom, new THREE.MeshBasicMaterial({ color: handleColor, depthTest: false }));
+      handle0.position.copy(p0);
+      handle0.userData = { vertexId: edge.v0, defaultColor: handleColor };
+      handle0.renderOrder = 10;
+      this.scaleHandlesGroup.add(handle0);
+
+      const handle1 = new THREE.Mesh(boxGeom, new THREE.MeshBasicMaterial({ color: handleColor, depthTest: false }));
+      handle1.position.copy(p1);
+      handle1.userData = { vertexId: edge.v1, defaultColor: handleColor };
+      handle1.renderOrder = 10;
+      this.scaleHandlesGroup.add(handle1);
+
+    } else if (this.selectedType === 'FACE') {
+      const face = this.faces[this.selectedId];
+      const corners = face.uniqueVertexIds.map(id => this.uniqueVertices[id].position.clone());
+      const centroid = new THREE.Vector3();
+      corners.forEach(p => centroid.add(p));
+      centroid.divideScalar(corners.length);
+
+      // Orthonormal basis in plane
+      const edgeMid = new THREE.Vector3().addVectors(corners[0], corners[1]).multiplyScalar(0.5);
+      const U = new THREE.Vector3().subVectors(edgeMid, centroid).normalize();
+      
+      const normal = new THREE.Vector3().crossVectors(
+        new THREE.Vector3().subVectors(corners[1], corners[0]),
+        new THREE.Vector3().subVectors(corners[2], corners[0])
+      ).normalize();
+      const V = new THREE.Vector3().crossVectors(normal, U).normalize();
+
+      // Corner handles
+      corners.forEach((p, idx) => {
+        const u = new THREE.Vector3().subVectors(p, centroid).dot(U);
+        const v = new THREE.Vector3().subVectors(p, centroid).dot(V);
+
+        const handle = new THREE.Mesh(boxGeom, new THREE.MeshBasicMaterial({ color: handleColor, depthTest: false }));
+        handle.position.copy(p);
+        handle.userData = { handleType: 'corner', cornerIndex: idx, u, v, defaultColor: handleColor };
+        handle.renderOrder = 10;
+        this.scaleHandlesGroup.add(handle);
+      });
+
+      // Edge midpoint handles (use actual boundary edges instead of iterating corners order)
+      const boundaryEdges = this.edges.filter(edge => 
+        face.uniqueVertexIds.includes(edge.v0) && face.uniqueVertexIds.includes(edge.v1)
+      );
+
+      boundaryEdges.forEach((edge, idx) => {
+        const p0 = this.uniqueVertices[edge.v0].position;
+        const p1 = this.uniqueVertices[edge.v1].position;
+        const mid = new THREE.Vector3().addVectors(p0, p1).multiplyScalar(0.5);
+
+        const u = new THREE.Vector3().subVectors(mid, centroid).dot(U);
+        const v = new THREE.Vector3().subVectors(mid, centroid).dot(V);
+
+        const handle = new THREE.Mesh(boxGeom, new THREE.MeshBasicMaterial({ color: handleColor, depthTest: false }));
+        handle.position.copy(mid);
+        handle.userData = { 
+          handleType: 'edge', 
+          edgeIndex: idx, 
+          v0: edge.v0, 
+          v1: edge.v1, 
+          u, 
+          v, 
+          defaultColor: handleColor 
+        };
+        handle.renderOrder = 10;
+        this.scaleHandlesGroup.add(handle);
+      });
+    }
+  }
+
+  private updateScaleHandlesPositions() {
+    if (!this.targetMesh || this.selectedId === -1 || this.activeGizmoMode !== 'scale') return;
+
+    if (this.selectedType === 'EDGE') {
+      const edge = this.edges[this.selectedId];
+      const p0 = this.uniqueVertices[edge.v0].position;
+      const p1 = this.uniqueVertices[edge.v1].position;
+
+      this.scaleHandlesGroup.children.forEach(child => {
+        const handle = child as THREE.Mesh;
+        if (handle.userData.vertexId === edge.v0) {
+          handle.position.copy(p0);
+        } else if (handle.userData.vertexId === edge.v1) {
+          handle.position.copy(p1);
+        }
+      });
+    } else if (this.selectedType === 'FACE') {
+      const face = this.faces[this.selectedId];
+      const corners = face.uniqueVertexIds.map(id => this.uniqueVertices[id].position.clone());
+      const centroid = new THREE.Vector3();
+      corners.forEach(p => centroid.add(p));
+      centroid.divideScalar(corners.length);
+
+      this.scaleHandlesGroup.children.forEach(child => {
+        const handle = child as THREE.Mesh;
+        if (handle.userData.handleType === 'corner') {
+          const idx = handle.userData.cornerIndex;
+          handle.position.copy(corners[idx]);
+        } else if (handle.userData.handleType === 'edge') {
+          const v0 = handle.userData.v0;
+          const v1 = handle.userData.v1;
+          const p0 = this.uniqueVertices[v0].position;
+          const p1 = this.uniqueVertices[v1].position;
+          const mid = new THREE.Vector3().addVectors(p0, p1).multiplyScalar(0.5);
+          handle.position.copy(mid);
+        }
+      });
+    }
+  }
+
+  private startScaleDrag(hitHandle: THREE.Mesh) {
+    if (!this.targetMesh) return;
+    this.isDraggingScaleHandle = true;
+    this.orbitControls.enabled = false;
+    this.activeScaleHandle = hitHandle;
+    (hitHandle.material as THREE.MeshBasicMaterial).color.set(0x14532d); // Dark Forest Green for active drag
+
+    this.cacheInitialVertexPositions();
+
+    if (this.selectedType === 'EDGE') {
+      const edge = this.edges[this.selectedId];
+      const p0 = this.initialVertexPositions[edge.v0];
+      const p1 = this.initialVertexPositions[edge.v1];
+      this.initialScaleCentroid.copy(p0).add(p1).multiplyScalar(0.5);
+      this.initialScaleDirection.subVectors(p1, p0).normalize();
+      this.initialScaleHalfLength = p0.distanceTo(p1) * 0.5;
+      this.draggedVertexId = hitHandle.userData.vertexId;
+    } else if (this.selectedType === 'FACE') {
+      const face = this.faces[this.selectedId];
+      const corners = face.uniqueVertexIds.map(id => this.initialVertexPositions[id]);
+      this.initialScaleCentroid.set(0, 0, 0);
+      corners.forEach(p => this.initialScaleCentroid.add(p));
+      this.initialScaleCentroid.divideScalar(corners.length);
+
+      const edgeMid = new THREE.Vector3().addVectors(corners[0], corners[1]).multiplyScalar(0.5);
+      this.initialScaleU.subVectors(edgeMid, this.initialScaleCentroid).normalize();
+      
+      const normal = new THREE.Vector3().crossVectors(
+        new THREE.Vector3().subVectors(corners[1], corners[0]),
+        new THREE.Vector3().subVectors(corners[2], corners[0])
+      ).normalize();
+      this.initialScaleV.crossVectors(normal, this.initialScaleU).normalize();
+
+      this.initialHandleU = hitHandle.userData.u;
+      this.initialHandleV = hitHandle.userData.v;
+      this.faceHandleType = hitHandle.userData.handleType;
+      
+      this.initialFaceVerticesUV = face.uniqueVertexIds.map(id => {
+        const p = this.initialVertexPositions[id];
+        return {
+          id,
+          u: new THREE.Vector3().subVectors(p, this.initialScaleCentroid).dot(this.initialScaleU),
+          v: new THREE.Vector3().subVectors(p, this.initialScaleCentroid).dot(this.initialScaleV)
+        };
+      });
+    }
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      this.handleScaleDrag(moveEvent);
+    };
+
+    const onPointerUp = () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      this.endScaleDrag();
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+  }
+
+  private handleScaleDrag(e: PointerEvent) {
+    if (!this.targetMesh || !this.isDraggingScaleHandle || !this.activeScaleHandle) return;
+
+    const activeCamera = this.cameraController.getActiveCamera();
+    const rect = this.canvas.getBoundingClientRect();
+    this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+    this.raycaster.setFromCamera(this.mouse, activeCamera);
+
+    const worldCentroid = this.initialScaleCentroid.clone().applyMatrix4(this.targetMesh.matrixWorld);
+
+    const cameraDir = new THREE.Vector3();
+    activeCamera.getWorldDirection(cameraDir);
+
+    const planeNormal = new THREE.Vector3();
+    if (this.selectedType === 'EDGE') {
+      const worldDir = this.initialScaleDirection.clone().transformDirection(this.targetMesh.matrixWorld);
+      planeNormal.crossVectors(worldDir, cameraDir).cross(worldDir).normalize();
+    } else {
+      const face = this.faces[this.selectedId];
+      const corners = face.uniqueVertexIds.map(id => this.initialVertexPositions[id]);
+      const normalLocal = new THREE.Vector3().crossVectors(
+        new THREE.Vector3().subVectors(corners[1], corners[0]),
+        new THREE.Vector3().subVectors(corners[2], corners[0])
+      ).normalize();
+      planeNormal.copy(normalLocal).transformDirection(this.targetMesh.matrixWorld);
+    }
+
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(planeNormal, worldCentroid);
+    const intersection = new THREE.Vector3();
+    this.raycaster.ray.intersectPlane(plane, intersection);
+
+    if (intersection) {
+      const localIntersect = intersection.clone().applyMatrix4(new THREE.Matrix4().copy(this.targetMesh.matrixWorld).invert());
+
+      if (this.selectedType === 'EDGE') {
+        const edge = this.edges[this.selectedId];
+        const projection = new THREE.Vector3().subVectors(localIntersect, this.initialScaleCentroid).dot(this.initialScaleDirection);
+        
+        let scaleFactor = 1.0;
+        if (this.draggedVertexId === edge.v1) {
+          scaleFactor = projection / this.initialScaleHalfLength;
+        } else {
+          scaleFactor = -projection / this.initialScaleHalfLength;
+        }
+        
+        scaleFactor = Math.max(0.05, scaleFactor);
+
+        this.uniqueVertices[edge.v1].position.copy(this.initialScaleCentroid).addScaledVector(this.initialScaleDirection, this.initialScaleHalfLength * scaleFactor);
+        this.uniqueVertices[edge.v0].position.copy(this.initialScaleCentroid).addScaledVector(this.initialScaleDirection, -this.initialScaleHalfLength * scaleFactor);
+
+      } else if (this.selectedType === 'FACE') {
+        const newU = new THREE.Vector3().subVectors(localIntersect, this.initialScaleCentroid).dot(this.initialScaleU);
+        const newV = new THREE.Vector3().subVectors(localIntersect, this.initialScaleCentroid).dot(this.initialScaleV);
+
+        let scaleU = 1.0;
+        let scaleV = 1.0;
+
+        if (this.faceHandleType === 'corner') {
+          scaleU = newU / this.initialHandleU;
+          scaleV = newV / this.initialHandleV;
+        } else {
+          if (Math.abs(this.initialHandleU) > Math.abs(this.initialHandleV)) {
+            scaleU = newU / this.initialHandleU;
+          } else {
+            scaleV = newV / this.initialHandleV;
+          }
+        }
+
+        scaleU = Math.max(0.05, scaleU);
+        scaleV = Math.max(0.05, scaleV);
+
+        this.initialFaceVerticesUV.forEach(item => {
+          const newPos = this.initialScaleCentroid.clone()
+            .addScaledVector(this.initialScaleU, item.u * scaleU)
+            .addScaledVector(this.initialScaleV, item.v * scaleV);
+          this.uniqueVertices[item.id].position.copy(newPos);
+        });
+      }
+
+      this.updateMeshGeometry();
+      this.updateScaleHandlesPositions();
+      this.updateHelpers();
+    }
+  }
+
+  private endScaleDrag() {
+    this.isDraggingScaleHandle = false;
+    this.orbitControls.enabled = true;
+    if (this.activeScaleHandle) {
+      (this.activeScaleHandle.material as THREE.MeshBasicMaterial).color.set(this.activeScaleHandle.userData.defaultColor);
+      this.activeScaleHandle = null;
+    }
+
+    this.enforcePlanarity();
+    this.rebuildScaleHandles();
+    this.wasDragging = true;
+  }
+
   private updateStatusText(text: string) {
     if (this.elToolDisplay) {
       this.elToolDisplay.innerText = text;
     }
+  }
+
+  private getScreenScaleFactor(object: THREE.Object3D): number {
+    const activeCamera = this.cameraController.getActiveCamera();
+    if (!activeCamera) return 1.0;
+
+    const worldPos = new THREE.Vector3();
+    object.getWorldPosition(worldPos);
+
+    if (activeCamera instanceof THREE.PerspectiveCamera) {
+      const distance = activeCamera.position.distanceTo(worldPos);
+      // Calibrate so that at a distance of ~300 units, the scale factor is 1.0 (default size 3.0 looks good).
+      return distance / 300.0;
+    } else if (activeCamera instanceof THREE.OrthographicCamera) {
+      // Orthographic camera size on screen is determined by (top - bottom) / zoom.
+      const height = (activeCamera.top - activeCamera.bottom) / activeCamera.zoom;
+      return height / 250.0;
+    }
+    return 1.0;
   }
 
   // Keep camera controller updated if active camera swaps
@@ -1048,6 +1514,24 @@ export class MeshEditor {
       if (this.transformControls.camera !== activeCam) {
         this.transformControls.camera = activeCam;
       }
+    }
+
+    // Scale our custom scale handles based on viewport/camera distance to keep screen size constant
+    if (this.activeGizmoMode === 'scale' && this.scaleHandlesGroup.children.length > 0) {
+      this.scaleHandlesGroup.children.forEach(child => {
+        const handle = child as THREE.Mesh;
+        const scaleFactor = this.getScreenScaleFactor(handle);
+        
+        let stateMultiplier = 1.0;
+        if (this.isDraggingScaleHandle && handle === this.activeScaleHandle) {
+          stateMultiplier = 1.8;
+        } else if (handle === this.hoveredScaleHandle) {
+          stateMultiplier = 1.4;
+        }
+        
+        const finalScale = scaleFactor * stateMultiplier;
+        handle.scale.set(finalScale, finalScale, finalScale);
+      });
     }
   }
 }
