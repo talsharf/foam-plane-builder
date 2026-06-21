@@ -57,6 +57,7 @@ const cadTools = new CADTools(scene, canvas, cameraController);
 
 const meshEditor = new MeshEditor(scene, cameraController, controls, canvas);
 meshEditor.setCADTools(cadTools);
+cadTools.setMeshEditor(meshEditor);
 
 const assemblyManager = new AssemblyManager(meshEditor);
 meshEditor.setAssemblyManager(assemblyManager);
@@ -72,6 +73,7 @@ cadTools.onToolChanged = (tool) => {
   if (tool !== 'ANCHOR') {
     meshEditor.clearAnchorToolState();
   }
+  meshEditor.onActiveToolChanged(tool);
 };
 
 // 6. Build Workshop Floor Grid & Helpers

@@ -169,7 +169,124 @@ export class MeshEditor {
     this.removeHoverHelper();
   }
 
+  public onActiveToolChanged(tool: string) {
+    const isSelect = (tool === 'SELECT');
 
+    // Enable/disable gizmo buttons in UI
+    const gizmoButtons = ['btn-gizmo-translate', 'btn-gizmo-rotate', 'btn-gizmo-scale'];
+    gizmoButtons.forEach(id => {
+      const btn = document.getElementById(id) as HTMLButtonElement | null;
+      if (btn) {
+        btn.disabled = !isSelect;
+        if (!isSelect) {
+          btn.classList.remove('active');
+        } else if (id === `btn-gizmo-${this.activeGizmoMode}`) {
+          btn.classList.add('active');
+        }
+      }
+    });
+
+    if (!isSelect) {
+      // Detach controls and clear handles so no gizmos are active/visible
+      this.transformControls.detach();
+      this.clearScaleHandles();
+      if (this.assemblyManager) {
+        this.assemblyManager.setHoveredComponent(null);
+      }
+    } else {
+      // Re-attach if there is an active selection
+      if (this.targetMesh) {
+        if (this.selectedId !== -1) {
+          this.selectElement(this.selectedType!, this.selectedId);
+        }
+      } else {
+        // Assembly mode
+        if (this.assemblyManager) {
+          const selectComponent = document.getElementById('select-active-component') as HTMLSelectElement | null;
+          if (selectComponent && selectComponent.value) {
+            const comp = this.assemblyManager.getComponent(selectComponent.value);
+            if (comp) {
+              this.transformControls.setMode(this.activeGizmoMode);
+              this.transformControls.attach(comp.mesh);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  public getHoveredElementWorldPosition(rayIntersectionPoint: THREE.Vector3): THREE.Vector3 | null {
+    if (!this.hoveredElement) return null;
+    const type = this.hoveredElement.type;
+    const index = this.hoveredElement.index;
+    const mesh = (this.hoveredElement as any).mesh || this.targetMesh;
+    if (!mesh) return null;
+
+    let uniqueVertices = this.uniqueVertices;
+    let edges = this.edges;
+
+    if (this.assemblyManager) {
+      const comp = this.assemblyManager.getComponentByMesh(mesh);
+      if (comp) {
+        uniqueVertices = comp.indexedGeometry.uniqueVertices;
+        edges = comp.indexedGeometry.edges;
+      }
+    }
+
+    if (type === 'VERTEX') {
+      const v = uniqueVertices[index];
+      if (v) {
+        return v.position.clone().applyMatrix4(mesh.matrixWorld);
+      }
+    } else if (type === 'EDGE') {
+      const edge = edges[index];
+      if (edge) {
+        const p0 = uniqueVertices[edge.v0].position.clone().applyMatrix4(mesh.matrixWorld);
+        const p1 = uniqueVertices[edge.v1].position.clone().applyMatrix4(mesh.matrixWorld);
+        
+        const lineDir = new THREE.Vector3().subVectors(p1, p0);
+        const lineLen = lineDir.length();
+        if (lineLen > 0.0001) {
+          lineDir.normalize();
+          const vToProj = new THREE.Vector3().subVectors(rayIntersectionPoint, p0);
+          let t = vToProj.dot(lineDir);
+          t = Math.max(0, Math.min(lineLen, t));
+          return p0.clone().add(lineDir.multiplyScalar(t));
+        } else {
+          return p0;
+        }
+      }
+    } else if (type === 'FACE') {
+      return rayIntersectionPoint;
+    }
+    return null;
+  }
+
+  public getHoveredEdgeVertices(): { p0: THREE.Vector3; p1: THREE.Vector3 } | null {
+    if (!this.hoveredElement || this.hoveredElement.type !== 'EDGE') return null;
+    const index = this.hoveredElement.index;
+    const mesh = (this.hoveredElement as any).mesh || this.targetMesh;
+    if (!mesh) return null;
+
+    let uniqueVertices = this.uniqueVertices;
+    let edges = this.edges;
+
+    if (this.assemblyManager) {
+      const comp = this.assemblyManager.getComponentByMesh(mesh);
+      if (comp) {
+        uniqueVertices = comp.indexedGeometry.uniqueVertices;
+        edges = comp.indexedGeometry.edges;
+      }
+    }
+
+    const edge = edges[index];
+    if (edge) {
+      const p0 = uniqueVertices[edge.v0].position.clone().applyMatrix4(mesh.matrixWorld);
+      const p1 = uniqueVertices[edge.v1].position.clone().applyMatrix4(mesh.matrixWorld);
+      return { p0, p1 };
+    }
+    return null;
+  }
 
   // Set the mesh to edit
   public setTargetMesh(mesh: THREE.Mesh | null) {
@@ -494,6 +611,8 @@ export class MeshEditor {
   private setupMouseEvents() {
     // Intercept clicks on our custom scaling handles
     this.canvas.addEventListener('pointerdown', (e) => {
+      const activeTool = this.cadTools ? this.cadTools.getActiveTool() : 'SELECT';
+      if (activeTool !== 'SELECT') return;
       if (!this.isEditMode || !this.targetMesh || this.activeGizmoMode !== 'scale') return;
       if (e.button !== 0) return; // Left click only
 
@@ -520,8 +639,13 @@ export class MeshEditor {
 
       if (e.button !== 0 || !this.isEditMode || this.isDragging || this.isDraggingScaleHandle) return;
 
+      const activeTool = this.cadTools ? this.cadTools.getActiveTool() : 'SELECT';
+      if (activeTool !== 'SELECT' && activeTool !== 'ANCHOR') {
+        return;
+      }
+
       // Handle Anchor Tool click selection (Step 1 & Step 2)
-      if (this.cadTools && this.cadTools.getActiveTool() === 'ANCHOR') {
+      if (activeTool === 'ANCHOR') {
         if (this.anchorChildFeature) {
           // A child feature has already been selected. We are looking for a valid parent feature click.
           if (this.hoveredElement) {
@@ -704,12 +828,17 @@ export class MeshEditor {
         } else if (this.cadTools && this.cadTools.getActiveTool() === 'ANCHOR') {
           this.cadTools.setActiveTool('SELECT');
           e.preventDefault();
+        } else if (this.cadTools && this.cadTools.getActiveTool() === 'MEASURE') {
+          this.cadTools.setActiveTool('SELECT');
+          e.preventDefault();
         }
       }
     });
 
     // Double click on component enters Tier 2, double click on empty space exits Tier 2
     this.canvas.addEventListener('dblclick', (e) => {
+      const activeTool = this.cadTools ? this.cadTools.getActiveTool() : 'SELECT';
+      if (activeTool !== 'SELECT') return;
       if (e.button !== 0 || !this.isEditMode) return;
 
       if (this.assemblyManager) {
@@ -750,11 +879,53 @@ export class MeshEditor {
 
     // Pointer move tracks cursor for proximity highlighting
     this.canvas.addEventListener('pointermove', (e) => {
-      const isAnchorTool = this.cadTools && this.cadTools.getActiveTool() === 'ANCHOR';
-      if (this.isDragging || this.isDraggingScaleHandle || !this.isEditMode) return;
-      if (!this.targetMesh && !isAnchorTool) return;
+      const activeTool = this.cadTools ? this.cadTools.getActiveTool() : 'SELECT';
+      if (activeTool !== 'SELECT' && activeTool !== 'ANCHOR' && activeTool !== 'MEASURE') {
+        this.removeHoverHelper();
+        this.hoveredElement = null;
+        return;
+      }
 
-      if (isAnchorTool) {
+      const isAnchorTool = activeTool === 'ANCHOR';
+      if (this.isDragging || this.isDraggingScaleHandle || !this.isEditMode) return;
+
+      // Tier 1 Assembly view component hover detection
+      if (!this.targetMesh && activeTool === 'SELECT') {
+        if (this.assemblyManager) {
+          const rect = this.canvas.getBoundingClientRect();
+          this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+          this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+          const activeCamera = this.cameraController.getActiveCamera();
+          this.raycaster.setFromCamera(this.mouse, activeCamera);
+
+          const meshes: THREE.Object3D[] = [];
+          this.assemblyManager.components.forEach((comp: any) => meshes.push(comp.mesh));
+          const intersects = this.raycaster.intersectObjects(meshes, true);
+          let hoveredCompId: string | null = null;
+
+          if (intersects.length > 0) {
+            const clickedMesh = intersects[0].object;
+            let rootMesh: THREE.Object3D | null = clickedMesh;
+            while (rootMesh && !meshes.includes(rootMesh)) {
+              rootMesh = rootMesh.parent;
+            }
+            if (rootMesh) {
+              const comp = this.assemblyManager.getComponentByMesh(rootMesh as THREE.Mesh);
+              if (comp) {
+                hoveredCompId = comp.id;
+              }
+            }
+          }
+          this.assemblyManager.setHoveredComponent(hoveredCompId);
+        }
+        return;
+      }
+
+      const isMeasureTool = activeTool === 'MEASURE';
+      if (!this.targetMesh && !isAnchorTool && !isMeasureTool) return;
+
+      if (isAnchorTool || isMeasureTool) {
         const rect = this.canvas.getBoundingClientRect();
         this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -784,7 +955,7 @@ export class MeshEditor {
           if (hoveredMesh) {
             const prox = this.getProximityElement(hoveredMesh);
             // If child is selected, parent must match same feature type
-            const isValidParent = prox && (!this.anchorChildFeature || prox.type === this.anchorChildFeature.type);
+            const isValidParent = prox && (isMeasureTool || !this.anchorChildFeature || prox.type === this.anchorChildFeature.type);
 
             if (isValidParent && prox) {
               if (this.hoveredElement && 
@@ -951,6 +1122,9 @@ export class MeshEditor {
         const h = child as THREE.Mesh;
         ((h as THREE.Mesh).material as THREE.MeshBasicMaterial).color.set(h.userData.defaultColor);
       });
+      if (this.assemblyManager) {
+        this.assemblyManager.setHoveredComponent(null);
+      }
     });
   }
 

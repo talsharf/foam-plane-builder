@@ -24,6 +24,7 @@ export class AssemblyManager {
   private components = new Map<string, CADComponent>();
   private meshEditor: MeshEditor;
   private activeComponentId: string | null = null;
+  private hoveredComponentId: string | null = null;
   private cameraController: any = null;
 
   public onActiveComponentChanged?: (id: string | null) => void;
@@ -63,6 +64,12 @@ export class AssemblyManager {
 
       this.updateAnchors();
     };
+  }
+
+  public setHoveredComponent(id: string | null) {
+    if (this.hoveredComponentId === id) return;
+    this.hoveredComponentId = id;
+    this.updateComponentMaterials();
   }
 
   public setCameraController(cameraController: any) {
@@ -270,6 +277,7 @@ export class AssemblyManager {
 
   public setActiveComponent(id: string | null) {
     this.activeComponentId = id;
+    this.hoveredComponentId = null;
 
     // Sync HTML Select value
     const selectEl = document.getElementById('select-active-component') as HTMLSelectElement | null;
@@ -323,15 +331,21 @@ export class AssemblyManager {
       const isInterfaceActive = this.activeComponentId === null || comp.id === this.activeComponentId;
       const isSelected = (this.activeComponentId === comp.id) ||
                          (this.activeComponentId === null && transformControls && transformControls.object === mesh);
+      const isHovered = (this.activeComponentId === null && this.hoveredComponentId === comp.id);
 
       // Handle standard material properties
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       materials.forEach(mat => {
         if (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial) {
           if (isSelected) {
-            mat.color.setHex(0xffffff); // Pure white highlighting
+            mat.color.setHex(0xdbeafe); // Soft blue-grey selection base
             if (mat instanceof THREE.MeshStandardMaterial) {
-              mat.emissive.setHex(0x333333); // Subtle glow
+              mat.emissive.setHex(0x2563eb); // Bright royal blue emissive glow
+            }
+          } else if (isHovered) {
+            mat.color.setHex(0xe0f2fe); // Soft blue for hover highlight
+            if (mat instanceof THREE.MeshStandardMaterial) {
+              mat.emissive.setHex(0x0284c7); // Sky blue glow
             }
           } else {
             mat.color.setHex(0xf1f5f9); // Default foam board slate-white

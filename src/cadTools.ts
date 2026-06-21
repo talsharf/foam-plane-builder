@@ -8,6 +8,11 @@ export class CADTools {
   private canvas: HTMLCanvasElement;
   private cameraController: CameraController;
   private targetMeshes: THREE.Object3D[] = [];
+  private meshEditor: any = null;
+
+  public setMeshEditor(meshEditor: any) {
+    this.meshEditor = meshEditor;
+  }
 
   private activeTool: CADToolType = 'SELECT';
   public onToolChanged?: (tool: CADToolType) => void;
@@ -28,9 +33,13 @@ export class CADTools {
   private isMeasuring = false;
 
   // Visual measurement items in 3D scene
-  private measureLine: THREE.Line | null = null;
+  private measureLine: THREE.Mesh | null = null;
   private startDot: THREE.Mesh | null = null;
   private endDot: THREE.Mesh | null = null;
+
+  // Start edge for perpendicular snapping
+  private startEdgeDir: THREE.Vector3 | null = null;
+  private perpSnapDot: THREE.Mesh | null = null;
   
   // UI Element for measurement label
   private measurementLabelDiv: HTMLDivElement | null = null;
@@ -175,9 +184,58 @@ export class CADTools {
     return targetPoint;
   }
 
+  private getSnappedIntersectionPoint(rawIntersectionPoint: THREE.Vector3): THREE.Vector3 {
+    if (this.meshEditor) {
+      const snapped = this.meshEditor.getHoveredElementWorldPosition(rawIntersectionPoint);
+      
+      // Handle perpendicular snapping between parallel edges
+      if (this.isMeasuring && this.startEdgeDir && snapped) {
+        const edge = this.meshEditor.getHoveredEdgeVertices();
+        if (edge) {
+          const hoverDir = new THREE.Vector3().subVectors(edge.p1, edge.p0).normalize();
+          const dot = hoverDir.dot(this.startEdgeDir);
+          if (Math.abs(dot) > 0.999) {
+            // Parallel edges detected!
+            const len = new THREE.Vector3().subVectors(edge.p1, edge.p0).length();
+            const t = new THREE.Vector3().subVectors(this.measureStartPoint!, edge.p0).dot(this.startEdgeDir) / dot;
+            if (t >= 0 && t <= len) {
+              const perpPoint = edge.p0.clone().add(hoverDir.multiplyScalar(t));
+              
+              // Only snap if the angle of deviation from perpendicular is less than 15 degrees
+              const vPerp = new THREE.Vector3().subVectors(perpPoint, this.measureStartPoint!);
+              const vRaw = new THREE.Vector3().subVectors(snapped, this.measureStartPoint!);
+              
+              let shouldSnap = true;
+              if (vPerp.lengthSq() > 0.001 && vRaw.lengthSq() > 0.001) {
+                const cosAngle = vPerp.normalize().dot(vRaw.normalize());
+                const angleRad = Math.acos(Math.max(-1, Math.min(1, cosAngle)));
+                const angleDeg = angleRad * (180 / Math.PI);
+                if (angleDeg > 15) {
+                  shouldSnap = false;
+                }
+              }
+              
+              if (shouldSnap) {
+                this.createPerpSnapDot(perpPoint);
+                return perpPoint;
+              }
+            }
+          }
+        }
+      }
+      
+      this.removePerpSnapDot();
+      if (snapped) {
+        return snapped;
+      }
+    }
+    return rawIntersectionPoint;
+  }
+
   // Updates X, Y, Z readout
   private updateCoordinates() {
-    const pt = this.getRaycastIntersection();
+    const rawPt = this.getRaycastIntersection();
+    const pt = this.getSnappedIntersectionPoint(rawPt);
     this.currentCoords.copy(pt);
 
     if (this.elX) this.elX.innerText = pt.x.toFixed(2);
@@ -187,12 +245,24 @@ export class CADTools {
 
   // Measurement logic click handler
   private handleMeasureClick() {
-    const pt = this.getRaycastIntersection();
+    const rawPt = this.getRaycastIntersection();
+    const pt = this.getSnappedIntersectionPoint(rawPt);
 
     if (!this.isMeasuring) {
+      // Clear previous measurement visual helpers
+      this.clearMeasurement();
+
       // First Click: Lock Start Point
       this.measureStartPoint = pt.clone();
       this.isMeasuring = true;
+
+      // Check if start point is on an edge to enable perpendicular edge snapping
+      if (this.meshEditor) {
+        const edge = this.meshEditor.getHoveredEdgeVertices();
+        if (edge) {
+          this.startEdgeDir = new THREE.Vector3().subVectors(edge.p1, edge.p0).normalize();
+        }
+      }
 
       // Spawn start indicator dot
       this.createStartDot(this.measureStartPoint);
@@ -210,6 +280,9 @@ export class CADTools {
       this.drawMeasurementLine(this.measureStartPoint!, this.measureEndPoint);
       this.createMeasurementLabel(this.measureStartPoint!, this.measureEndPoint);
 
+      // Clear the temporary perpendicular snap dot as we have finished the measurement
+      this.removePerpSnapDot();
+
       if (this.elToolDisplay) {
         this.elToolDisplay.innerText = `Distance: ${this.measureStartPoint!.distanceTo(this.measureEndPoint).toFixed(1)} mm. Click to measure again.`;
       }
@@ -220,7 +293,8 @@ export class CADTools {
     if (!this.isMeasuring || !this.measureStartPoint) return;
 
     // If currently drafting, draw a live dotted line to the current hover point
-    const currentPt = this.getRaycastIntersection();
+    const rawPt = this.getRaycastIntersection();
+    const currentPt = this.getSnappedIntersectionPoint(rawPt);
     this.drawMeasurementLine(this.measureStartPoint, currentPt);
     this.createMeasurementLabel(this.measureStartPoint, currentPt);
   }
@@ -230,20 +304,43 @@ export class CADTools {
     this.isMeasuring = false;
     this.measureStartPoint = null;
     this.measureEndPoint = null;
+    this.startEdgeDir = null;
+    this.removePerpSnapDot();
 
     if (this.measureLine) {
       this.scene.remove(this.measureLine);
       this.measureLine.geometry.dispose();
+      if (this.measureLine.material) {
+        if (Array.isArray(this.measureLine.material)) {
+          this.measureLine.material.forEach(m => m.dispose());
+        } else {
+          this.measureLine.material.dispose();
+        }
+      }
       this.measureLine = null;
     }
     if (this.startDot) {
       this.scene.remove(this.startDot);
       this.startDot.geometry.dispose();
+      if (this.startDot.material) {
+        if (Array.isArray(this.startDot.material)) {
+          this.startDot.material.forEach(m => m.dispose());
+        } else {
+          this.startDot.material.dispose();
+        }
+      }
       this.startDot = null;
     }
     if (this.endDot) {
       this.scene.remove(this.endDot);
       this.endDot.geometry.dispose();
+      if (this.endDot.material) {
+        if (Array.isArray(this.endDot.material)) {
+          this.endDot.material.forEach(m => m.dispose());
+        } else {
+          this.endDot.material.dispose();
+        }
+      }
       this.endDot = null;
     }
     if (this.measurementLabelDiv) {
@@ -260,22 +357,54 @@ export class CADTools {
 
   // 3D rendering builders
   private createStartDot(point: THREE.Vector3) {
-    if (this.startDot) this.scene.remove(this.startDot);
+    if (this.startDot) {
+      this.scene.remove(this.startDot);
+      this.startDot.geometry.dispose();
+      if (this.startDot.material) {
+        if (Array.isArray(this.startDot.material)) {
+          this.startDot.material.forEach(m => m.dispose());
+        } else {
+          this.startDot.material.dispose();
+        }
+      }
+    }
 
     const geom = new THREE.SphereGeometry(3, 16, 16);
-    const mat = new THREE.MeshBasicMaterial({ color: 0xfbbf24 }); // Amber yellow
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xfbbf24, // Amber yellow
+      depthTest: false,
+      transparent: true,
+      opacity: 0.9
+    });
     this.startDot = new THREE.Mesh(geom, mat);
     this.startDot.position.copy(point);
+    this.startDot.renderOrder = 999;
     this.scene.add(this.startDot);
   }
 
   private createEndDot(point: THREE.Vector3) {
-    if (this.endDot) this.scene.remove(this.endDot);
+    if (this.endDot) {
+      this.scene.remove(this.endDot);
+      this.endDot.geometry.dispose();
+      if (this.endDot.material) {
+        if (Array.isArray(this.endDot.material)) {
+          this.endDot.material.forEach(m => m.dispose());
+        } else {
+          this.endDot.material.dispose();
+        }
+      }
+    }
 
     const geom = new THREE.SphereGeometry(3, 16, 16);
-    const mat = new THREE.MeshBasicMaterial({ color: 0xfbbf24 });
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xfbbf24,
+      depthTest: false,
+      transparent: true,
+      opacity: 0.9
+    });
     this.endDot = new THREE.Mesh(geom, mat);
     this.endDot.position.copy(point);
+    this.endDot.renderOrder = 999;
     this.scene.add(this.endDot);
   }
 
@@ -283,21 +412,81 @@ export class CADTools {
     if (this.measureLine) {
       this.scene.remove(this.measureLine);
       this.measureLine.geometry.dispose();
+      if (this.measureLine.material) {
+        if (Array.isArray(this.measureLine.material)) {
+          this.measureLine.material.forEach(m => m.dispose());
+        } else {
+          this.measureLine.material.dispose();
+        }
+      }
+      this.measureLine = null;
     }
 
-    const points = [start, end];
-    const geom = new THREE.BufferGeometry().setFromPoints(points);
-    
-    // Dashed line material
-    const mat = new THREE.LineDashedMaterial({
-      color: 0xfbbf24,
-      dashSize: 8,
-      gapSize: 4,
+    const distance = start.distanceTo(end);
+    if (distance < 0.1) return;
+
+    // Use a cylinder mesh (radius ~1.5mm / thickness ~3mm)
+    const radius = 1.5;
+    const geom = new THREE.CylinderGeometry(radius, radius, distance, 8);
+    // Cylinder geometry is created vertically centered at origin, orient it to align with points
+    geom.translate(0, distance / 2, 0);
+    geom.rotateX(Math.PI / 2);
+
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xfbbf24, // Amber yellow
+      depthTest: false, // Ensure line is visible on top of other meshes
+      transparent: true,
+      opacity: 0.8
     });
 
-    this.measureLine = new THREE.Line(geom, mat);
-    this.measureLine.computeLineDistances(); // Crucial for dashed line rendering
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.position.copy(start);
+    mesh.lookAt(end);
+    mesh.renderOrder = 999;
+
+    this.measureLine = mesh;
     this.scene.add(this.measureLine);
+  }
+
+  private createPerpSnapDot(point: THREE.Vector3) {
+    if (this.perpSnapDot) {
+      this.scene.remove(this.perpSnapDot);
+      this.perpSnapDot.geometry.dispose();
+      if (this.perpSnapDot.material) {
+        if (Array.isArray(this.perpSnapDot.material)) {
+          this.perpSnapDot.material.forEach(m => m.dispose());
+        } else {
+          this.perpSnapDot.material.dispose();
+        }
+      }
+    }
+
+    const geom = new THREE.SphereGeometry(3, 16, 16);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x10b981, // Emerald green for perpendicular snap!
+      depthTest: false,
+      transparent: true,
+      opacity: 0.9
+    });
+    this.perpSnapDot = new THREE.Mesh(geom, mat);
+    this.perpSnapDot.position.copy(point);
+    this.perpSnapDot.renderOrder = 1000;
+    this.scene.add(this.perpSnapDot);
+  }
+
+  private removePerpSnapDot() {
+    if (this.perpSnapDot) {
+      this.scene.remove(this.perpSnapDot);
+      this.perpSnapDot.geometry.dispose();
+      if (this.perpSnapDot.material) {
+        if (Array.isArray(this.perpSnapDot.material)) {
+          this.perpSnapDot.material.forEach(m => m.dispose());
+        } else {
+          this.perpSnapDot.material.dispose();
+        }
+      }
+      this.perpSnapDot = null;
+    }
   }
 
   private createMeasurementLabel(start: THREE.Vector3, end: THREE.Vector3) {
