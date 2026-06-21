@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CameraController } from './cameraController';
 import { CADTools } from './cadTools';
+import { MeshEditor } from './meshEditor';
 
 // 1. Get canvas and configure WebGLRenderer
 const canvas = document.getElementById('scratchpad-canvas') as HTMLCanvasElement;
@@ -51,6 +52,8 @@ const cameraController = new CameraController(
 );
 
 const cadTools = new CADTools(scene, canvas, cameraController);
+
+const meshEditor = new MeshEditor(scene, cameraController, controls, canvas);
 
 // 6. Build Workshop Floor Grid & Helpers
 // Major Grid: 1000mm wide, subdivisions every 100mm (cyan highlight)
@@ -115,6 +118,7 @@ testMeshes.push(tail);
 // Register meshes for visual shading changes
 cameraController.registerTestMeshes(testMeshes);
 cadTools.registerTargetMeshes(testMeshes);
+meshEditor.setTargetMesh(fuselage);
 
 // 9. Handle Resizing
 window.addEventListener('resize', () => {
@@ -149,6 +153,9 @@ function animate() {
 
   // Update CAD tools (midpoint projection calculations)
   cadTools.update();
+
+  // Update mesh editor gizmos
+  meshEditor.update();
 
   // Render using active camera
   const activeCamera = cameraController.getActiveCamera();

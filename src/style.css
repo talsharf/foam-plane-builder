@@ -90,6 +90,13 @@ body, html {
   font-weight: 600;
 }
 
+#btn-edit-toggle.active {
+  color: #10b981; /* Emerald green */
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.3);
+  box-shadow: 0 0 8px 0 rgba(16, 185, 129, 0.15);
+}
+
 /* Panel Dividers */
 .hud-divider {
   width: 1px;
