@@ -97,6 +97,13 @@ body, html {
   box-shadow: 0 0 8px 0 rgba(16, 185, 129, 0.15);
 }
 
+.hud-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+
 /* Panel Dividers */
 .hud-divider {
   width: 1px;
@@ -242,4 +249,11 @@ body, html {
   transform: translate(-50%, -100%);
   margin-top: -8px;
   white-space: nowrap;
+}
+
+/* Disabled button state */
+.hud-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
 }

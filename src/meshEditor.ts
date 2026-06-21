@@ -504,6 +504,19 @@ export class MeshEditor {
     this.selectedType = type;
     this.selectedId = index;
 
+    // Handle vertex rotation restriction (disable rotate button, switch mode if active)
+    const rotateBtn = document.getElementById('btn-gizmo-rotate') as HTMLButtonElement | null;
+    if (rotateBtn) {
+      if (type === 'VERTEX') {
+        rotateBtn.disabled = true;
+        if (this.activeGizmoMode === 'rotate') {
+          this.setGizmoMode('translate');
+        }
+      } else {
+        rotateBtn.disabled = false;
+      }
+    }
+
     this.calculateSelectionCentroid();
     this.createHighlightHelper();
 
@@ -529,6 +542,11 @@ export class MeshEditor {
     this.selectedId = -1;
     this.transformControls.detach();
     this.removeHighlightHelper();
+
+    const rotateBtn = document.getElementById('btn-gizmo-rotate') as HTMLButtonElement | null;
+    if (rotateBtn) {
+      rotateBtn.disabled = false;
+    }
   }
 
   private calculateSelectionCentroid() {
@@ -564,8 +582,6 @@ export class MeshEditor {
     this.removeHighlightHelper();
     if (!this.targetMesh || this.selectedId === -1) return;
 
-    const lineMat = new THREE.LineBasicMaterial({ color: 0x06b6d4, linewidth: 3, depthTest: false });
-
     if (this.selectedType === 'VERTEX') {
       // Highlight dot handle
       this.vertexHandlesGroup.children.forEach(child => {
@@ -575,35 +591,67 @@ export class MeshEditor {
         }
       });
     } else if (this.selectedType === 'EDGE') {
-      // Draw thicker line along edge
+      // Draw bold black line along edge
       const edge = this.edges[this.selectedId];
       const p0 = this.uniqueVertices[edge.v0].position;
       const p1 = this.uniqueVertices[edge.v1].position;
 
       const geom = new THREE.BufferGeometry().setFromPoints([p0, p1]);
-      const line = new THREE.Line(geom, lineMat);
+      const boldBlackLineMat = new THREE.LineBasicMaterial({
+        color: 0x000000,
+        linewidth: 6,
+        depthTest: false
+      });
+      const line = new THREE.Line(geom, boldBlackLineMat);
       line.renderOrder = 2;
       this.targetMesh.add(line);
       this.highlightHelper = line;
     } else if (this.selectedType === 'FACE') {
-      // Outline the perimeter of the face
+      // Draw face in white overlay
       const face = this.faces[this.selectedId];
-      const points: THREE.Vector3[] = [];
+      const geom = new THREE.BufferGeometry();
       
-      // Collect unique vertices forming face
-      face.uniqueVertexIds.forEach(id => {
-        points.push(this.uniqueVertices[id].position.clone());
-      });
-      // Close loop
-      if (points.length > 0) {
-        points.push(points[0].clone());
-      }
+      const vertices: number[] = [];
+      const positionAttr = this.targetMesh.geometry.attributes.position;
+      const indexAttr = this.targetMesh.geometry.index;
 
-      const geom = new THREE.BufferGeometry().setFromPoints(points);
-      const outline = new THREE.Line(geom, lineMat);
-      outline.renderOrder = 2;
-      this.targetMesh.add(outline);
-      this.highlightHelper = outline;
+      face.triangles.forEach(triIdx => {
+        let idx0 = triIdx * 3;
+        let idx1 = triIdx * 3 + 1;
+        let idx2 = triIdx * 3 + 2;
+
+        if (indexAttr) {
+          idx0 = indexAttr.getX(idx0);
+          idx1 = indexAttr.getX(idx1);
+          idx2 = indexAttr.getX(idx2);
+        }
+
+        const p0 = new THREE.Vector3().fromBufferAttribute(positionAttr, idx0);
+        const p1 = new THREE.Vector3().fromBufferAttribute(positionAttr, idx1);
+        const p2 = new THREE.Vector3().fromBufferAttribute(positionAttr, idx2);
+
+        vertices.push(p0.x, p0.y, p0.z);
+        vertices.push(p1.x, p1.y, p1.z);
+        vertices.push(p2.x, p2.y, p2.z);
+      });
+
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+      geom.computeVertexNormals();
+
+      const faceMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+        transparent: true,
+        opacity: 0.8
+      });
+      
+      const mesh = new THREE.Mesh(geom, faceMat);
+      mesh.renderOrder = 2;
+      this.targetMesh.add(mesh);
+      this.highlightHelper = mesh;
     }
   }
 
@@ -612,6 +660,20 @@ export class MeshEditor {
       if (this.highlightHelper.parent) {
         this.highlightHelper.parent.remove(this.highlightHelper);
       }
+      
+      // Dispose geometry and material to prevent WebGL memory leaks
+      if ((this.highlightHelper as any).geometry) {
+        (this.highlightHelper as any).geometry.dispose();
+      }
+      if ((this.highlightHelper as any).material) {
+        const mat = (this.highlightHelper as any).material;
+        if (Array.isArray(mat)) {
+          mat.forEach((m: any) => m.dispose());
+        } else {
+          mat.dispose();
+        }
+      }
+      
       this.highlightHelper = null;
     }
 
