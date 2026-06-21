@@ -33,10 +33,19 @@ export class AssemblyManager {
 
     // Register callback on meshEditor
     this.meshEditor.onGeometryChanged = () => {
-      // If we are in Tier 1 (no active target mesh in editor) and dragging a component,
-      // update its relative anchor localMatrix based on the new dragged position.
       const targetMesh = this.meshEditor.getTargetMesh();
       const transformControls = this.meshEditor.getTransformControls();
+
+      // If we are in Tier 2 (editing targetMesh), recalculate its face normals in real-time
+      if (targetMesh) {
+        const activeComp = this.getComponentByMesh(targetMesh);
+        if (activeComp) {
+          this.recalculateFaceNormals(activeComp);
+        }
+      }
+
+      // If we are in Tier 1 (no active target mesh in editor) and dragging a component,
+      // update its relative anchor localMatrix based on the new dragged position.
       if (!targetMesh && transformControls && transformControls.object) {
         const attachedMesh = transformControls.object as THREE.Mesh;
         const draggedComp = this.getComponentByMesh(attachedMesh);
@@ -85,6 +94,10 @@ export class AssemblyManager {
     if (!this.activeComponentId) {
       this.activeComponentId = id;
     }
+  }
+
+  public getComponentsList(): CADComponent[] {
+    return Array.from(this.components.values());
   }
 
   public getComponent(id: string): CADComponent | null {
@@ -239,7 +252,7 @@ export class AssemblyManager {
 
           comp.mesh.position.copy(pos);
           comp.mesh.quaternion.copy(quat);
-          comp.mesh.scale.copy(scale);
+          // Scale isolation: preserve the child's own local scale when parent scales
           comp.mesh.updateMatrixWorld(true);
           
           // Rebuild wireframe visual helper for child mesh
@@ -376,9 +389,9 @@ export class AssemblyManager {
       }
     });
 
-    // Toggle Break Anchor button visibility in HUD
-    const breakAnchorBtn = document.getElementById('btn-break-anchor');
-    if (breakAnchorBtn) {
+    // Update Anchor / Break Anchor button state dynamically in HUD
+    const anchorBtn = document.getElementById('btn-tool-anchor');
+    if (anchorBtn) {
       let isAnchoredSelected = false;
       const selectedMesh = transformControls ? transformControls.object : null;
       if (selectedMesh && this.activeComponentId === null) {
@@ -387,7 +400,62 @@ export class AssemblyManager {
           isAnchoredSelected = true;
         }
       }
-      breakAnchorBtn.style.display = isAnchoredSelected ? 'flex' : 'none';
+
+      if (isAnchoredSelected) {
+        anchorBtn.innerHTML = '<i class="fa-solid fa-link-slash"></i> Break Anchor';
+        anchorBtn.title = "Break Anchor Link";
+        anchorBtn.classList.add('hud-btn-danger');
+      } else {
+        anchorBtn.innerHTML = '<i class="fa-solid fa-link"></i> Anchor';
+        anchorBtn.title = "Anchor / Snap Tool";
+        anchorBtn.classList.remove('hud-btn-danger');
+      }
     }
+  }
+
+  private recalculateFaceNormals(comp: CADComponent) {
+    const geom = comp.indexedGeometry;
+    const mesh = comp.mesh;
+    const bufferGeom = mesh.geometry;
+    const indicesAttr = bufferGeom.index;
+
+    // Helper to get unique vertex index from buffer attribute index
+    const getUniqueVertexIndex = (bufferIdx: number): number => {
+      for (let i = 0; i < geom.uniqueVertices.length; i++) {
+        if (geom.uniqueVertices[i].indices.includes(bufferIdx)) {
+          return i;
+        }
+      }
+      return 0;
+    };
+
+    geom.faces.forEach(face => {
+      if (face.triangles.length === 0) return;
+
+      // We calculate the normal of the first triangle of the face
+      const t = face.triangles[0];
+      let idx0 = t * 3;
+      let idx1 = t * 3 + 1;
+      let idx2 = t * 3 + 2;
+
+      if (indicesAttr) {
+        idx0 = indicesAttr.getX(idx0);
+        idx1 = indicesAttr.getX(idx1);
+        idx2 = indicesAttr.getX(idx2);
+      }
+
+      const u0 = getUniqueVertexIndex(idx0);
+      const u1 = getUniqueVertexIndex(idx1);
+      const u2 = getUniqueVertexIndex(idx2);
+
+      const p0 = geom.uniqueVertices[u0].position;
+      const p1 = geom.uniqueVertices[u1].position;
+      const p2 = geom.uniqueVertices[u2].position;
+
+      face.normal.crossVectors(
+        new THREE.Vector3().subVectors(p1, p0),
+        new THREE.Vector3().subVectors(p2, p0)
+      ).normalize();
+    });
   }
 }

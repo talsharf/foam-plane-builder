@@ -4,6 +4,7 @@ import { CameraController } from './cameraController';
 import { CADTools } from './cadTools';
 import { MeshEditor } from './meshEditor';
 import { AssemblyManager } from './assemblyManager';
+import { HistoryManager } from './history';
 
 // 1. Get canvas and configure WebGLRenderer
 const canvas = document.getElementById('scratchpad-canvas') as HTMLCanvasElement;
@@ -59,6 +60,9 @@ meshEditor.setCADTools(cadTools);
 
 const assemblyManager = new AssemblyManager(meshEditor);
 meshEditor.setAssemblyManager(assemblyManager);
+
+const historyManager = new HistoryManager(assemblyManager, meshEditor);
+meshEditor.setHistoryManager(historyManager);
 
 assemblyManager.setCameraController(cameraController);
 cameraController.setAssemblyManager(assemblyManager);
@@ -176,20 +180,53 @@ if (exitComponentBtn) {
   });
 }
 
-// Bind Break Anchor UI button
-const breakAnchorBtn = document.getElementById('btn-break-anchor');
-if (breakAnchorBtn) {
-  breakAnchorBtn.addEventListener('click', () => {
-    const transformControls = meshEditor.getTransformControls();
-    const attachedMesh = transformControls.object;
-    if (attachedMesh) {
-      const comp = assemblyManager.getComponentByMesh(attachedMesh);
-      if (comp && comp.id) {
-        assemblyManager.breakAnchor(comp.id);
-      }
+// Bind Anchor button action (toggles between Snapping Tool and Break Anchor)
+cadTools.onAnchorButtonClicked = () => {
+  const transformControls = meshEditor.getTransformControls();
+  const attachedMesh = transformControls.object;
+  if (attachedMesh && assemblyManager.getActiveComponentId() === null) {
+    const comp = assemblyManager.getComponentByMesh(attachedMesh);
+    if (comp && comp.anchor) {
+      historyManager.pushState();
+      assemblyManager.breakAnchor(comp.id);
+      return;
     }
+  }
+  // Fall back to standard anchor snapping tool
+  cadTools.setActiveTool('ANCHOR');
+};
+
+// Bind Undo / Redo UI buttons
+const undoBtn = document.getElementById('btn-undo');
+const redoBtn = document.getElementById('btn-redo');
+if (undoBtn) {
+  undoBtn.addEventListener('click', () => {
+    historyManager.undo();
   });
 }
+if (redoBtn) {
+  redoBtn.addEventListener('click', () => {
+    historyManager.redo();
+  });
+}
+
+// Bind keyboard shortcuts for Undo / Redo
+window.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && !e.altKey && !e.metaKey) {
+    const key = e.key.toLowerCase();
+    if (key === 'z') {
+      if (e.shiftKey) {
+        historyManager.redo();
+      } else {
+        historyManager.undo();
+      }
+      e.preventDefault();
+    } else if (key === 'y') {
+      historyManager.redo();
+      e.preventDefault();
+    }
+  }
+});
 
 // Register meshes for visual shading changes
 cameraController.registerTestMeshes(testMeshes);
@@ -244,5 +281,9 @@ function animate() {
 }
 
 // Start loop
+(window as any).assemblyManager = assemblyManager;
+(window as any).meshEditor = meshEditor;
+(window as any).THREE = THREE;
+
 animate();
 console.log("Foam Plane Builder Phase 1 Canvas Environment initialized successfully.");

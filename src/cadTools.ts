@@ -11,6 +11,7 @@ export class CADTools {
 
   private activeTool: CADToolType = 'SELECT';
   public onToolChanged?: (tool: CADToolType) => void;
+  public onAnchorButtonClicked?: () => void;
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2();
 
@@ -103,7 +104,13 @@ export class CADTools {
       btnMeasure.addEventListener('click', () => this.setActiveTool('MEASURE'));
     }
     if (btnAnchor) {
-      btnAnchor.addEventListener('click', () => this.setActiveTool('ANCHOR'));
+      btnAnchor.addEventListener('click', () => {
+        if (this.onAnchorButtonClicked) {
+          this.onAnchorButtonClicked();
+        } else {
+          this.setActiveTool('ANCHOR');
+        }
+      });
     }
   }
 

@@ -97,6 +97,17 @@ body, html {
   box-shadow: 0 0 8px 0 rgba(16, 185, 129, 0.15);
 }
 
+.hud-btn.hud-btn-danger {
+  color: #ef4444; /* Rose red */
+}
+
+.hud-btn.hud-btn-danger:hover {
+  color: #f8fafc;
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.35);
+  box-shadow: 0 0 8px 0 rgba(239, 68, 68, 0.15);
+}
+
 .hud-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;

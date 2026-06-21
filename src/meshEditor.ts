@@ -35,6 +35,7 @@ export class MeshEditor {
   private isEditMode = true;
   private activeGizmoMode: GizmoMode = 'translate';
   private cadTools: any = null;
+  private historyManager: any = null;
   private anchorChildFeature: { type: SelectionFilter; index: number; componentId: string } | null = null;
   private anchorChildHighlight: THREE.Object3D | null = null;
   private anchorPreviewMesh: THREE.Mesh | null = null;
@@ -131,8 +132,20 @@ export class MeshEditor {
     this.cadTools = cadTools;
   }
 
+  public setHistoryManager(historyManager: any) {
+    this.historyManager = historyManager;
+  }
+
   public getAnchorChildFeature() {
     return this.anchorChildFeature;
+  }
+
+  public getSelectedType(): SelectionFilter | null {
+    return this.selectedType;
+  }
+
+  public getSelectedId(): number {
+    return this.selectedId;
   }
 
   public clearAnchorToolState() {
@@ -177,7 +190,7 @@ export class MeshEditor {
     this.transformControls.detach();
   }
 
-  private rebuildEditMode() {
+  public rebuildEditMode() {
     this.disableEditMode();
     if (!this.targetMesh) return;
 
@@ -449,6 +462,7 @@ export class MeshEditor {
       this.isDragging = e.value;
 
       if (e.value) {
+        if (this.historyManager) this.historyManager.pushState();
         this.cacheInitialVertexPositions();
       } else {
         // Run planarity enforcer upon releasing mouse
@@ -516,6 +530,7 @@ export class MeshEditor {
               const parentComp = this.assemblyManager.getComponentByMesh(hEl.mesh);
               const childComp = this.assemblyManager.getComponent(this.anchorChildFeature.componentId);
               if (parentComp && childComp && hEl.type === this.anchorChildFeature.type) {
+                if (this.historyManager) this.historyManager.pushState();
                 // Calculate the final alignment transformation matrix
                 let childFeatureId: string | number = this.anchorChildFeature.index;
                 if (this.anchorChildFeature.type === 'FACE') {
@@ -559,7 +574,7 @@ export class MeshEditor {
 
                 childComp.mesh.position.copy(pos);
                 childComp.mesh.quaternion.copy(quat);
-                childComp.mesh.scale.copy(scale);
+                // Scale isolation: preserve child's own local scale when snapping
                 childComp.mesh.updateMatrixWorld(true);
 
                 // Register anchor relationship in assembly manager
@@ -852,7 +867,8 @@ export class MeshEditor {
 
                   this.anchorPreviewMesh.position.copy(pos);
                   this.anchorPreviewMesh.quaternion.copy(quat);
-                  this.anchorPreviewMesh.scale.copy(scale);
+                  // Scale isolation: keep child component's own scale in the preview
+                  this.anchorPreviewMesh.scale.copy(childComp.mesh.scale);
                   this.anchorPreviewMesh.visible = true;
                 }
               }
@@ -1093,7 +1109,7 @@ export class MeshEditor {
     return null;
   }
 
-  private selectElement(type: SelectionFilter, index: number) {
+  public selectElement(type: SelectionFilter, index: number) {
     this.clearSelection();
     this.selectedType = type;
     this.selectedId = index;
@@ -1139,7 +1155,7 @@ export class MeshEditor {
     this.updateStatusText(`Selected ${desc}`);
   }
 
-  private clearSelection() {
+  public clearSelection() {
     this.selectedType = null;
     this.selectedId = -1;
     this.transformControls.detach();
