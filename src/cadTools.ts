@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CameraController } from './cameraController';
 
-export type CADToolType = 'SELECT' | 'MEASURE';
+export type CADToolType = 'SELECT' | 'MEASURE' | 'ANCHOR';
 
 export class CADTools {
   private scene: THREE.Scene;
@@ -10,8 +10,13 @@ export class CADTools {
   private targetMeshes: THREE.Object3D[] = [];
 
   private activeTool: CADToolType = 'SELECT';
+  public onToolChanged?: (tool: CADToolType) => void;
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2();
+
+  public getActiveTool(): CADToolType {
+    return this.activeTool;
+  }
   
   // Hover tracker
   private currentCoords = new THREE.Vector3();
@@ -89,12 +94,16 @@ export class CADTools {
   private setupUIBindings() {
     const btnSelect = document.getElementById('btn-tool-select');
     const btnMeasure = document.getElementById('btn-tool-measure');
+    const btnAnchor = document.getElementById('btn-tool-anchor');
 
     if (btnSelect) {
       btnSelect.addEventListener('click', () => this.setActiveTool('SELECT'));
     }
     if (btnMeasure) {
       btnMeasure.addEventListener('click', () => this.setActiveTool('MEASURE'));
+    }
+    if (btnAnchor) {
+      btnAnchor.addEventListener('click', () => this.setActiveTool('ANCHOR'));
     }
   }
 
@@ -104,6 +113,7 @@ export class CADTools {
     // Toggle button styles
     const btnSelect = document.getElementById('btn-tool-select');
     const btnMeasure = document.getElementById('btn-tool-measure');
+    const btnAnchor = document.getElementById('btn-tool-anchor');
 
     if (btnSelect) {
       if (tool === 'SELECT') btnSelect.classList.add('active');
@@ -113,15 +123,30 @@ export class CADTools {
       if (tool === 'MEASURE') btnMeasure.classList.add('active');
       else btnMeasure.classList.remove('active');
     }
+    if (btnAnchor) {
+      if (tool === 'ANCHOR') btnAnchor.classList.add('active');
+      else btnAnchor.classList.remove('active');
+    }
 
     // Update footer info
     if (this.elToolDisplay) {
-      this.elToolDisplay.innerText = tool === 'SELECT' ? 'Select Mode Active' : 'Tape Measure: Click first point';
+      if (tool === 'SELECT') {
+        this.elToolDisplay.innerText = 'Select Mode Active';
+      } else if (tool === 'MEASURE') {
+        this.elToolDisplay.innerText = 'Tape Measure: Click first point';
+      } else if (tool === 'ANCHOR') {
+        this.elToolDisplay.innerText = 'Anchor Tool: Click child feature (vertex/edge/face) to snap';
+      }
     }
 
     // Clear any active measurements if switching out of measure tool
     if (tool !== 'MEASURE') {
       this.clearMeasurement();
+    }
+
+    // Trigger onToolChanged callback
+    if (this.onToolChanged) {
+      this.onToolChanged(tool);
     }
   }
 

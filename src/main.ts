@@ -55,12 +55,20 @@ const cameraController = new CameraController(
 const cadTools = new CADTools(scene, canvas, cameraController);
 
 const meshEditor = new MeshEditor(scene, cameraController, controls, canvas);
+meshEditor.setCADTools(cadTools);
 
 const assemblyManager = new AssemblyManager(meshEditor);
 meshEditor.setAssemblyManager(assemblyManager);
 
 assemblyManager.setCameraController(cameraController);
 cameraController.setAssemblyManager(assemblyManager);
+
+// Clear snapping tool highlights when switching active tools
+cadTools.onToolChanged = (tool) => {
+  if (tool !== 'ANCHOR') {
+    meshEditor.clearAnchorToolState();
+  }
+};
 
 // 6. Build Workshop Floor Grid & Helpers
 // Major Grid: 1000mm wide, subdivisions every 100mm (cyan highlight)
@@ -165,6 +173,21 @@ const exitComponentBtn = document.getElementById('btn-exit-component');
 if (exitComponentBtn) {
   exitComponentBtn.addEventListener('click', () => {
     assemblyManager.setActiveComponent(null);
+  });
+}
+
+// Bind Break Anchor UI button
+const breakAnchorBtn = document.getElementById('btn-break-anchor');
+if (breakAnchorBtn) {
+  breakAnchorBtn.addEventListener('click', () => {
+    const transformControls = meshEditor.getTransformControls();
+    const attachedMesh = transformControls.object;
+    if (attachedMesh) {
+      const comp = assemblyManager.getComponentByMesh(attachedMesh);
+      if (comp && comp.id) {
+        assemblyManager.breakAnchor(comp.id);
+      }
+    }
   });
 }
 

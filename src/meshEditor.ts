@@ -34,6 +34,10 @@ export class MeshEditor {
   private targetMesh: THREE.Mesh | null = null;
   private isEditMode = true;
   private activeGizmoMode: GizmoMode = 'translate';
+  private cadTools: any = null;
+  private anchorChildFeature: { type: SelectionFilter; index: number; componentId: string } | null = null;
+  private anchorChildHighlight: THREE.Object3D | null = null;
+  private anchorPreviewMesh: THREE.Mesh | null = null;
 
   // Hover states
   private hoveredElement: { type: SelectionFilter; index: number } | null = null;
@@ -122,6 +126,36 @@ export class MeshEditor {
   public getTransformControls(): any {
     return this.transformControls;
   }
+
+  public setCADTools(cadTools: any) {
+    this.cadTools = cadTools;
+  }
+
+  public getAnchorChildFeature() {
+    return this.anchorChildFeature;
+  }
+
+  public clearAnchorToolState() {
+    if (this.anchorChildHighlight) {
+      this.scene.remove(this.anchorChildHighlight);
+      this.anchorChildHighlight = null;
+    }
+    if (this.anchorPreviewMesh) {
+      this.scene.remove(this.anchorPreviewMesh);
+      if (this.anchorPreviewMesh.geometry) this.anchorPreviewMesh.geometry.dispose();
+      if (this.anchorPreviewMesh.material) {
+        if (Array.isArray(this.anchorPreviewMesh.material)) {
+          this.anchorPreviewMesh.material.forEach(m => m.dispose());
+        } else {
+          this.anchorPreviewMesh.material.dispose();
+        }
+      }
+      this.anchorPreviewMesh = null;
+    }
+    this.anchorChildFeature = null;
+    this.removeHoverHelper();
+  }
+
 
 
   // Set the mesh to edit
@@ -472,6 +506,122 @@ export class MeshEditor {
 
       if (e.button !== 0 || !this.isEditMode || this.isDragging || this.isDraggingScaleHandle) return;
 
+      // Handle Anchor Tool click selection (Step 1 & Step 2)
+      if (this.cadTools && this.cadTools.getActiveTool() === 'ANCHOR') {
+        if (this.anchorChildFeature) {
+          // A child feature has already been selected. We are looking for a valid parent feature click.
+          if (this.hoveredElement) {
+            const hEl = this.hoveredElement as any;
+            if (hEl.mesh && this.assemblyManager) {
+              const parentComp = this.assemblyManager.getComponentByMesh(hEl.mesh);
+              const childComp = this.assemblyManager.getComponent(this.anchorChildFeature.componentId);
+              if (parentComp && childComp && hEl.type === this.anchorChildFeature.type) {
+                // Calculate the final alignment transformation matrix
+                let childFeatureId: string | number = this.anchorChildFeature.index;
+                if (this.anchorChildFeature.type === 'FACE') {
+                  childFeatureId = childComp.indexedGeometry.faces[this.anchorChildFeature.index].id;
+                } else if (this.anchorChildFeature.type === 'EDGE') {
+                  childFeatureId = childComp.indexedGeometry.edges[this.anchorChildFeature.index].id;
+                }
+
+                let parentFeatureId: string | number = hEl.index;
+                if (hEl.type === 'FACE') {
+                  parentFeatureId = parentComp.indexedGeometry.faces[hEl.index].id;
+                } else if (hEl.type === 'EDGE') {
+                  parentFeatureId = parentComp.indexedGeometry.edges[hEl.index].id;
+                }
+
+                // 1. Get child feature local basis
+                const childFeatureBasisWorld = this.assemblyManager.getFeatureBasis(childComp, this.anchorChildFeature.type, childFeatureId);
+                childComp.mesh.updateMatrixWorld(true);
+                const invChildWorld = new THREE.Matrix4().copy(childComp.mesh.matrixWorld).invert();
+                const childLocalBasis = new THREE.Matrix4().multiplyMatrices(invChildWorld, childFeatureBasisWorld);
+
+                // 2. Get parent feature world basis
+                const parentFeatureBasisWorld = this.assemblyManager.getFeatureBasis(parentComp, hEl.type, parentFeatureId);
+
+                // 3. Align frames (rotate 180 deg around X-axis for faces so they touch face-to-face)
+                const targetWorldBasis = parentFeatureBasisWorld.clone();
+                if (hEl.type === 'FACE') {
+                  const flipRotation = new THREE.Matrix4().makeRotationX(Math.PI);
+                  targetWorldBasis.multiply(flipRotation);
+                }
+
+                // 4. Calculate snapped world matrix of child
+                const invChildLocalBasis = new THREE.Matrix4().copy(childLocalBasis).invert();
+                const childWorldMatrixSnapped = new THREE.Matrix4().multiplyMatrices(targetWorldBasis, invChildLocalBasis);
+
+                // Decompose and apply to child component mesh
+                const pos = new THREE.Vector3();
+                const quat = new THREE.Quaternion();
+                const scale = new THREE.Vector3();
+                childWorldMatrixSnapped.decompose(pos, quat, scale);
+
+                childComp.mesh.position.copy(pos);
+                childComp.mesh.quaternion.copy(quat);
+                childComp.mesh.scale.copy(scale);
+                childComp.mesh.updateMatrixWorld(true);
+
+                // Register anchor relationship in assembly manager
+                this.assemblyManager.setAnchor(
+                  childComp.id,
+                  parentComp.id,
+                  this.anchorChildFeature.type,
+                  parentFeatureId
+                );
+
+                // Return to select tool
+                this.cadTools.setActiveTool('SELECT');
+                return;
+              }
+            }
+          }
+          // Clicked empty space or invalid parent while child is selected: cancel snapping
+          this.cadTools.setActiveTool('SELECT');
+        } else {
+          // Step 1: No child feature selected yet. Try to select one.
+          if (this.hoveredElement) {
+            const hEl = this.hoveredElement as any;
+            if (hEl.mesh && this.assemblyManager) {
+              const comp = this.assemblyManager.getComponentByMesh(hEl.mesh);
+              if (comp) {
+                if (this.anchorChildHighlight) {
+                  this.scene.remove(this.anchorChildHighlight);
+                  this.anchorChildHighlight = null;
+                }
+
+                this.anchorChildFeature = {
+                  type: hEl.type,
+                  index: hEl.index,
+                  componentId: comp.id
+                };
+
+                // Draw persistent blue selection highlight
+                const blueColor = 0x3b82f6; // Bright blue
+                const selectOpacity = 0.7;
+                const highlightMesh = this.createFeatureMesh(hEl.mesh, hEl.type, hEl.index, blueColor, selectOpacity, true);
+                if (highlightMesh) {
+                  this.scene.add(highlightMesh);
+                  this.anchorChildHighlight = highlightMesh;
+                }
+
+                // Update status display
+                const compName = comp.name;
+                const featureDesc = hEl.type === 'FACE' ? `Face #${hEl.index}` : hEl.type === 'EDGE' ? `Edge #${hEl.index}` : `Vertex #${hEl.index}`;
+                const displayEl = document.getElementById('tool-display');
+                if (displayEl) {
+                  displayEl.innerText = `Selected Child: ${compName} (${featureDesc}). Hover & click parent target to snap.`;
+                }
+              }
+            }
+          } else {
+            // Clicked empty space before child selection: cancel tool
+            this.cadTools.setActiveTool('SELECT');
+          }
+        }
+        return;
+      }
+
       // If the user clicked on the gizmo, do not change selection
       if (this.transformControls && this.transformControls.axis !== null) {
         return;
@@ -536,6 +686,9 @@ export class MeshEditor {
         if (this.assemblyManager && this.assemblyManager.getActiveComponentId()) {
           this.assemblyManager.setActiveComponent(null);
           e.preventDefault();
+        } else if (this.cadTools && this.cadTools.getActiveTool() === 'ANCHOR') {
+          this.cadTools.setActiveTool('SELECT');
+          e.preventDefault();
         }
       }
     });
@@ -582,7 +735,144 @@ export class MeshEditor {
 
     // Pointer move tracks cursor for proximity highlighting
     this.canvas.addEventListener('pointermove', (e) => {
-      if (this.isDragging || this.isDraggingScaleHandle || !this.isEditMode || !this.targetMesh) return;
+      const isAnchorTool = this.cadTools && this.cadTools.getActiveTool() === 'ANCHOR';
+      if (this.isDragging || this.isDraggingScaleHandle || !this.isEditMode) return;
+      if (!this.targetMesh && !isAnchorTool) return;
+
+      if (isAnchorTool) {
+        const rect = this.canvas.getBoundingClientRect();
+        this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+        if (this.assemblyManager) {
+          const activeCamera = this.cameraController.getActiveCamera();
+          this.raycaster.setFromCamera(this.mouse, activeCamera);
+
+          const meshes: THREE.Object3D[] = [];
+          this.assemblyManager.components.forEach((comp: any) => {
+            if (!this.anchorChildFeature || comp.id !== this.anchorChildFeature.componentId) {
+              meshes.push(comp.mesh);
+            }
+          });
+          
+          const intersects = this.raycaster.intersectObjects(meshes, true);
+          let hoveredMesh: THREE.Mesh | null = null;
+          if (intersects.length > 0) {
+            const clickedMesh = intersects[0].object;
+            let rootMesh: THREE.Object3D | null = clickedMesh;
+            while (rootMesh && !meshes.includes(rootMesh)) {
+              rootMesh = rootMesh.parent;
+            }
+            if (rootMesh) hoveredMesh = rootMesh as THREE.Mesh;
+          }
+
+          if (hoveredMesh) {
+            const prox = this.getProximityElement(hoveredMesh);
+            // If child is selected, parent must match same feature type
+            const isValidParent = prox && (!this.anchorChildFeature || prox.type === this.anchorChildFeature.type);
+
+            if (isValidParent && prox) {
+              if (this.hoveredElement && 
+                  this.hoveredElement.type === prox.type && 
+                  this.hoveredElement.index === prox.index && 
+                  (this.hoveredElement as any).mesh === hoveredMesh) {
+                return;
+              }
+
+              this.removeHoverHelper();
+              this.hoveredElement = { type: prox.type, index: prox.index, mesh: hoveredMesh } as any;
+
+              // Draw hover highlight
+              const hoverColor = 0xffffff;
+              const hoverOpacity = 0.4;
+              const hMesh = this.createFeatureMesh(hoveredMesh, prox.type, prox.index, hoverColor, hoverOpacity);
+              if (hMesh) {
+                this.scene.add(hMesh);
+                this.hoverHelper = hMesh;
+              }
+
+              // Draw snapped ghost preview if child feature is selected
+              if (this.anchorChildFeature) {
+                const childComp = this.assemblyManager.getComponent(this.anchorChildFeature.componentId);
+                const parentComp = this.assemblyManager.getComponentByMesh(hoveredMesh);
+                if (childComp && parentComp) {
+                  if (!this.anchorPreviewMesh) {
+                    const previewGeom = childComp.mesh.geometry.clone();
+                    const previewMat = new THREE.MeshBasicMaterial({
+                      color: 0xf59e0b, // Warm orange preview
+                      transparent: true,
+                      opacity: 0.5,
+                      depthWrite: false,
+                      depthTest: true
+                    });
+                    this.anchorPreviewMesh = new THREE.Mesh(previewGeom, previewMat);
+                    this.scene.add(this.anchorPreviewMesh);
+                  }
+
+                  // Calculate child and parent feature IDs for getFeatureBasis lookup
+                  let childFeatureId: string | number = this.anchorChildFeature.index;
+                  if (this.anchorChildFeature.type === 'FACE') {
+                    childFeatureId = childComp.indexedGeometry.faces[this.anchorChildFeature.index].id;
+                  } else if (this.anchorChildFeature.type === 'EDGE') {
+                    childFeatureId = childComp.indexedGeometry.edges[this.anchorChildFeature.index].id;
+                  }
+
+                  let parentFeatureId: string | number = prox.index;
+                  if (prox.type === 'FACE') {
+                    parentFeatureId = parentComp.indexedGeometry.faces[prox.index].id;
+                  } else if (prox.type === 'EDGE') {
+                    parentFeatureId = parentComp.indexedGeometry.edges[prox.index].id;
+                  }
+
+                  // 1. Get child feature local basis
+                  const childFeatureBasisWorld = this.assemblyManager.getFeatureBasis(childComp, this.anchorChildFeature.type, childFeatureId);
+                  childComp.mesh.updateMatrixWorld(true);
+                  const invChildWorld = new THREE.Matrix4().copy(childComp.mesh.matrixWorld).invert();
+                  const childLocalBasis = new THREE.Matrix4().multiplyMatrices(invChildWorld, childFeatureBasisWorld);
+
+                  // 2. Get parent feature world basis
+                  const parentFeatureBasisWorld = this.assemblyManager.getFeatureBasis(parentComp, prox.type, parentFeatureId);
+
+                  // 3. Align frames (rotate 180 deg around X-axis for faces so they touch face-to-face)
+                  const targetWorldBasis = parentFeatureBasisWorld.clone();
+                  if (prox.type === 'FACE') {
+                    const flipRotation = new THREE.Matrix4().makeRotationX(Math.PI);
+                    targetWorldBasis.multiply(flipRotation);
+                  }
+
+                  // 4. Calculate snapped world matrix of child
+                  const invChildLocalBasis = new THREE.Matrix4().copy(childLocalBasis).invert();
+                  const childWorldMatrixSnapped = new THREE.Matrix4().multiplyMatrices(targetWorldBasis, invChildLocalBasis);
+
+                  // Decompose and apply to preview
+                  const pos = new THREE.Vector3();
+                  const quat = new THREE.Quaternion();
+                  const scale = new THREE.Vector3();
+                  childWorldMatrixSnapped.decompose(pos, quat, scale);
+
+                  this.anchorPreviewMesh.position.copy(pos);
+                  this.anchorPreviewMesh.quaternion.copy(quat);
+                  this.anchorPreviewMesh.scale.copy(scale);
+                  this.anchorPreviewMesh.visible = true;
+                }
+              }
+            } else {
+              this.hoveredElement = null;
+              this.removeHoverHelper();
+              if (this.anchorPreviewMesh) {
+                this.anchorPreviewMesh.visible = false;
+              }
+            }
+          } else {
+            this.hoveredElement = null;
+            this.removeHoverHelper();
+            if (this.anchorPreviewMesh) {
+              this.anchorPreviewMesh.visible = false;
+            }
+          }
+        }
+        return;
+      }
 
       const rect = this.canvas.getBoundingClientRect();
       this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -704,8 +994,22 @@ export class MeshEditor {
   }
 
   // Hover & selection proximity detection
-  private getProximityElement(): { type: SelectionFilter; index: number } | null {
-    if (!this.targetMesh) return null;
+  private getProximityElement(meshOverride: THREE.Mesh | null = null): { type: SelectionFilter; index: number } | null {
+    const mesh = meshOverride || this.targetMesh;
+    if (!mesh) return null;
+
+    let uniqueVertices = this.uniqueVertices;
+    let edges = this.edges;
+    let faces = this.faces;
+
+    if (meshOverride && this.assemblyManager) {
+      const comp = this.assemblyManager.getComponentByMesh(meshOverride);
+      if (comp) {
+        uniqueVertices = comp.indexedGeometry.uniqueVertices;
+        edges = comp.indexedGeometry.edges;
+        faces = comp.indexedGeometry.faces;
+      }
+    }
 
     const activeCamera = this.cameraController.getActiveCamera();
     const rect = this.canvas.getBoundingClientRect();
@@ -720,8 +1024,8 @@ export class MeshEditor {
     let minVertexDist = Infinity;
     let closestVertexIdx = -1;
 
-    this.uniqueVertices.forEach((uv, idx) => {
-      const worldV = uv.position.clone().applyMatrix4(this.targetMesh!.matrixWorld);
+    uniqueVertices.forEach((uv, idx) => {
+      const worldV = uv.position.clone().applyMatrix4(mesh.matrixWorld);
       const screenV = worldV.project(activeCamera);
       
       // Check if vertex is actually in front of camera frustum
@@ -746,9 +1050,9 @@ export class MeshEditor {
     let minEdgeDist = Infinity;
     let closestEdgeIdx = -1;
 
-    this.edges.forEach((edge, idx) => {
-      const p0 = this.uniqueVertices[edge.v0].position.clone().applyMatrix4(this.targetMesh!.matrixWorld);
-      const p1 = this.uniqueVertices[edge.v1].position.clone().applyMatrix4(this.targetMesh!.matrixWorld);
+    edges.forEach((edge, idx) => {
+      const p0 = uniqueVertices[edge.v0].position.clone().applyMatrix4(mesh.matrixWorld);
+      const p1 = uniqueVertices[edge.v1].position.clone().applyMatrix4(mesh.matrixWorld);
       
       const s0 = p0.project(activeCamera);
       const s1 = p1.project(activeCamera);
@@ -774,12 +1078,12 @@ export class MeshEditor {
 
     // 3. Check Face raycasting intersection
     this.raycaster.setFromCamera(this.mouse, activeCamera);
-    const intersects = this.raycaster.intersectObject(this.targetMesh);
+    const intersects = this.raycaster.intersectObject(mesh);
     if (intersects.length > 0) {
       const intersection = intersects[0];
       const faceIdx = intersection.faceIndex;
       if (faceIdx !== undefined) {
-        const mappedFaceIdx = this.faces.findIndex(f => f.triangles.includes(faceIdx));
+        const mappedFaceIdx = faces.findIndex(f => f.triangles.includes(faceIdx));
         if (mappedFaceIdx !== -1) {
           return { type: 'FACE', index: mappedFaceIdx };
         }
@@ -1706,4 +2010,144 @@ export class MeshEditor {
       }
     }
   }
+
+  private createFeatureMesh(
+    mesh: THREE.Mesh,
+    type: SelectionFilter,
+    index: number,
+    color: number,
+    opacity: number,
+    isCylinderBold: boolean = false
+  ): THREE.Object3D | null {
+    let uniqueVertices = this.uniqueVertices;
+    let edges = this.edges;
+    let faces = this.faces;
+
+    if (this.assemblyManager) {
+      const comp = this.assemblyManager.getComponentByMesh(mesh);
+      if (comp) {
+        uniqueVertices = comp.indexedGeometry.uniqueVertices;
+        edges = comp.indexedGeometry.edges;
+        faces = comp.indexedGeometry.faces;
+      }
+    }
+
+    if (type === 'VERTEX') {
+      const v = uniqueVertices[index];
+      if (!v) return null;
+      const geom = new THREE.SphereGeometry(3, 8, 8);
+      const mat = new THREE.MeshBasicMaterial({
+        color: color,
+        depthTest: false,
+        transparent: opacity < 1.0,
+        opacity: opacity
+      });
+      const sphere = new THREE.Mesh(geom, mat);
+      const worldPos = v.position.clone().applyMatrix4(mesh.matrixWorld);
+      sphere.position.copy(worldPos);
+      sphere.renderOrder = 4;
+      return sphere;
+    } else if (type === 'EDGE') {
+      const edge = edges[index];
+      if (!edge) return null;
+      const p0 = uniqueVertices[edge.v0].position.clone().applyMatrix4(mesh.matrixWorld);
+      const p1 = uniqueVertices[edge.v1].position.clone().applyMatrix4(mesh.matrixWorld);
+      const distance = p0.distanceTo(p1);
+      const midpoint = new THREE.Vector3().addVectors(p0, p1).multiplyScalar(0.5);
+      const direction = new THREE.Vector3().subVectors(p1, p0).normalize();
+      
+      const alignAxis = new THREE.Vector3(0, 1, 0);
+      const quaternion = new THREE.Quaternion().setFromUnitVectors(alignAxis, direction);
+
+      const thickness = isCylinderBold ? 1.2 : 0.6;
+      const geom = new THREE.CylinderGeometry(thickness, thickness, distance, 6);
+      const mat = new THREE.MeshBasicMaterial({
+        color: color,
+        transparent: opacity < 1.0,
+        opacity: opacity,
+        depthTest: false
+      });
+      const cylinder = new THREE.Mesh(geom, mat);
+      cylinder.position.copy(midpoint);
+      cylinder.quaternion.copy(quaternion);
+      cylinder.renderOrder = 4;
+      return cylinder;
+    } else if (type === 'FACE') {
+      const face = faces[index];
+      if (!face) return null;
+      const geom = new THREE.BufferGeometry();
+      const vertices: number[] = [];
+      const positionAttr = mesh.geometry.attributes.position;
+      const indexAttr = mesh.geometry.index;
+
+      face.triangles.forEach(triIdx => {
+        let idx0 = triIdx * 3;
+        let idx1 = triIdx * 3 + 1;
+        let idx2 = triIdx * 3 + 2;
+
+        if (indexAttr) {
+          idx0 = indexAttr.getX(idx0);
+          idx1 = indexAttr.getX(idx1);
+          idx2 = indexAttr.getX(idx2);
+        }
+
+        const p0 = new THREE.Vector3().fromBufferAttribute(positionAttr, idx0).applyMatrix4(mesh.matrixWorld);
+        const p1 = new THREE.Vector3().fromBufferAttribute(positionAttr, idx1).applyMatrix4(mesh.matrixWorld);
+        const p2 = new THREE.Vector3().fromBufferAttribute(positionAttr, idx2).applyMatrix4(mesh.matrixWorld);
+
+        vertices.push(p0.x, p0.y, p0.z);
+        vertices.push(p1.x, p1.y, p1.z);
+        vertices.push(p2.x, p2.y, p2.z);
+      });
+
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+      geom.computeVertexNormals();
+
+      const mat = new THREE.MeshBasicMaterial({
+        color: color,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+        transparent: opacity < 1.0,
+        opacity: opacity
+      });
+      const faceMesh = new THREE.Mesh(geom, mat);
+      faceMesh.renderOrder = 4;
+      
+      if (opacity >= 0.5) {
+        const group = new THREE.Group();
+        group.add(faceMesh);
+        
+        const boundaryEdges = edges.filter(edge => 
+          face.uniqueVertexIds.includes(edge.v0) && face.uniqueVertexIds.includes(edge.v1)
+        );
+        const yellowMat = new THREE.MeshBasicMaterial({
+          color: 0xfbbf24,
+          depthTest: false
+        });
+        boundaryEdges.forEach(edge => {
+          const p0 = uniqueVertices[edge.v0].position.clone().applyMatrix4(mesh.matrixWorld);
+          const p1 = uniqueVertices[edge.v1].position.clone().applyMatrix4(mesh.matrixWorld);
+          const dist = p0.distanceTo(p1);
+          const midpoint = new THREE.Vector3().addVectors(p0, p1).multiplyScalar(0.5);
+          const direction = new THREE.Vector3().subVectors(p1, p0).normalize();
+          
+          const alignAxis = new THREE.Vector3(0, 1, 0);
+          const quaternion = new THREE.Quaternion().setFromUnitVectors(alignAxis, direction);
+          const cylinderGeom = new THREE.CylinderGeometry(1.2, 1.2, dist, 6);
+          const lineMesh = new THREE.Mesh(cylinderGeom, yellowMat);
+          lineMesh.position.copy(midpoint);
+          lineMesh.quaternion.copy(quaternion);
+          lineMesh.renderOrder = 4;
+          group.add(lineMesh);
+        });
+        return group;
+      }
+
+      return faceMesh;
+    }
+    return null;
+  }
 }
+

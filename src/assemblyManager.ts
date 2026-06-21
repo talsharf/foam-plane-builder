@@ -293,6 +293,14 @@ export class AssemblyManager {
     return this.activeComponentId;
   }
 
+  public breakAnchor(componentId: string) {
+    const comp = this.components.get(componentId);
+    if (comp) {
+      comp.anchor = null;
+      this.updateComponentMaterials();
+    }
+  }
+
   public updateComponentMaterials() {
     const shadingMode = this.cameraController ? this.cameraController.getCurrentShadingMode() : 'SOLID';
     const transformControls = this.meshEditor ? this.meshEditor.getTransformControls() : null;
@@ -367,5 +375,19 @@ export class AssemblyManager {
         edgeMat.needsUpdate = true;
       }
     });
+
+    // Toggle Break Anchor button visibility in HUD
+    const breakAnchorBtn = document.getElementById('btn-break-anchor');
+    if (breakAnchorBtn) {
+      let isAnchoredSelected = false;
+      const selectedMesh = transformControls ? transformControls.object : null;
+      if (selectedMesh && this.activeComponentId === null) {
+        const comp = this.getComponentByMesh(selectedMesh as THREE.Mesh);
+        if (comp && comp.anchor) {
+          isAnchoredSelected = true;
+        }
+      }
+      breakAnchorBtn.style.display = isAnchoredSelected ? 'flex' : 'none';
+    }
   }
 }
