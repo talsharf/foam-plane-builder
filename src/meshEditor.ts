@@ -4,7 +4,7 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import { CameraController } from './cameraController';
 
 export type SelectionFilter = 'VERTEX' | 'EDGE' | 'FACE';
-export type GizmoMode = 'translate' | 'rotate';
+export type GizmoMode = 'translate' | 'rotate' | 'scale';
 
 interface UniqueVertex {
   position: THREE.Vector3;
@@ -324,13 +324,13 @@ export class MeshEditor {
     ];
   }
 
-  // Create yellow selection dots at unique vertices in Edit Mode
+  // Create selection dots at unique vertices in Edit Mode
   private createVertexHandles() {
     this.vertexHandlesGroup.clear();
     if (!this.targetMesh) return;
 
-    const dotGeom = new THREE.SphereGeometry(2.5, 12, 12);
-    const dotMat = new THREE.MeshBasicMaterial({ color: 0xfbbf24 }); // Amber
+    const dotGeom = new THREE.SphereGeometry(1.2, 12, 12);
+    const dotMat = new THREE.MeshBasicMaterial({ color: 0x64748b }); // Slate Gray
 
     this.uniqueVertices.forEach((uv, idx) => {
       const handle = new THREE.Mesh(dotGeom, dotMat.clone());
@@ -366,6 +366,7 @@ export class MeshEditor {
         this.calculateSelectionCentroid();
         this.dummyTransformObject.position.copy(this.selectionCentroid);
         this.dummyTransformObject.quaternion.set(0, 0, 0, 1);
+        this.dummyTransformObject.scale.set(1, 1, 1);
         this.updateHelpers();
       }
     });
@@ -388,6 +389,11 @@ export class MeshEditor {
 
       if (e.button !== 0 || !this.isEditMode || !this.targetMesh || this.isDragging) return;
 
+      // If the user clicked on the gizmo, do not change selection
+      if (this.transformControls && this.transformControls.axis !== null) {
+        return;
+      }
+
       if (this.hoveredElement) {
         this.selectElement(this.hoveredElement.type, this.hoveredElement.index);
       } else {
@@ -398,6 +404,15 @@ export class MeshEditor {
     // Pointer move tracks cursor for proximity highlighting
     this.canvas.addEventListener('pointermove', (e) => {
       if (this.isDragging || !this.isEditMode || !this.targetMesh) return;
+
+      // If the cursor is hovering over the transform gizmo axes, do not update hover highlights
+      if (this.transformControls && this.transformControls.axis !== null) {
+        if (this.hoveredElement !== null) {
+          this.hoveredElement = null;
+          this.removeHoverHelper();
+        }
+        return;
+      }
 
       const rect = this.canvas.getBoundingClientRect();
       this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -425,13 +440,14 @@ export class MeshEditor {
 
     bindBtn('btn-gizmo-translate', () => this.setGizmoMode('translate'));
     bindBtn('btn-gizmo-rotate', () => this.setGizmoMode('rotate'));
+    bindBtn('btn-gizmo-scale', () => this.setGizmoMode('scale'));
   }
 
   private setGizmoMode(mode: GizmoMode) {
     if (this.activeGizmoMode === mode) return;
     this.activeGizmoMode = mode;
 
-    const modes: GizmoMode[] = ['translate', 'rotate'];
+    const modes: GizmoMode[] = ['translate', 'rotate', 'scale'];
     modes.forEach(m => {
       const btn = document.getElementById(`btn-gizmo-${m}`);
       if (btn) btn.classList.remove('active');
@@ -546,17 +562,18 @@ export class MeshEditor {
     this.selectedType = type;
     this.selectedId = index;
 
-    // Handle vertex rotation restriction (disable rotate button, switch mode if active)
+    // Handle vertex rotation and scale restrictions (disable rotate/scale buttons, switch mode if active)
     const rotateBtn = document.getElementById('btn-gizmo-rotate') as HTMLButtonElement | null;
-    if (rotateBtn) {
-      if (type === 'VERTEX') {
-        rotateBtn.disabled = true;
-        if (this.activeGizmoMode === 'rotate') {
-          this.setGizmoMode('translate');
-        }
-      } else {
-        rotateBtn.disabled = false;
+    const scaleBtn = document.getElementById('btn-gizmo-scale') as HTMLButtonElement | null;
+    if (type === 'VERTEX') {
+      if (rotateBtn) rotateBtn.disabled = true;
+      if (scaleBtn) scaleBtn.disabled = true;
+      if (this.activeGizmoMode === 'rotate' || this.activeGizmoMode === 'scale') {
+        this.setGizmoMode('translate');
       }
+    } else {
+      if (rotateBtn) rotateBtn.disabled = false;
+      if (scaleBtn) scaleBtn.disabled = false;
     }
 
     this.calculateSelectionCentroid();
@@ -565,6 +582,7 @@ export class MeshEditor {
     // Position dummy object at selection centroid and attach TransformControls
     this.dummyTransformObject.position.copy(this.selectionCentroid);
     this.dummyTransformObject.quaternion.set(0, 0, 0, 1);
+    this.dummyTransformObject.scale.set(1, 1, 1);
     
     // Sync transform mode
     this.transformControls.setMode(this.activeGizmoMode);
@@ -586,9 +604,9 @@ export class MeshEditor {
     this.removeHighlightHelper();
 
     const rotateBtn = document.getElementById('btn-gizmo-rotate') as HTMLButtonElement | null;
-    if (rotateBtn) {
-      rotateBtn.disabled = false;
-    }
+    const scaleBtn = document.getElementById('btn-gizmo-scale') as HTMLButtonElement | null;
+    if (rotateBtn) rotateBtn.disabled = false;
+    if (scaleBtn) scaleBtn.disabled = false;
   }
 
   private calculateSelectionCentroid() {
@@ -625,11 +643,12 @@ export class MeshEditor {
     if (!this.targetMesh || this.selectedId === -1) return;
 
     if (this.selectedType === 'VERTEX') {
-      // Highlight dot handle
+      // Highlight dot handle and scale up
       this.vertexHandlesGroup.children.forEach(child => {
         const handle = child as THREE.Mesh;
         if (handle.userData.uniqueVertexIdx === this.selectedId) {
           (handle.material as THREE.MeshBasicMaterial).color.set(0x06b6d4); // Light Cyan
+          handle.scale.set(1.8, 1.8, 1.8);
         }
       });
     } else if (this.selectedType === 'EDGE') {
@@ -727,10 +746,11 @@ export class MeshEditor {
       this.highlightHelper = null;
     }
 
-    // Reset vertex handle colors
+    // Reset vertex handle colors and scale
     this.vertexHandlesGroup.children.forEach(child => {
       const handle = child as THREE.Mesh;
-      (handle.material as THREE.MeshBasicMaterial).color.set(0xfbbf24);
+      (handle.material as THREE.MeshBasicMaterial).color.set(0x64748b); // Slate Gray
+      handle.scale.set(1, 1, 1);
     });
   }
 
@@ -744,11 +764,12 @@ export class MeshEditor {
     if (this.selectedType === type && this.selectedId === index) return;
 
     if (type === 'VERTEX') {
-      // Color the handle orange to indicate hover
+      // Color the handle orange and scale up to indicate hover
       this.vertexHandlesGroup.children.forEach(child => {
         const handle = child as THREE.Mesh;
         if (handle.userData.uniqueVertexIdx === index) {
           (handle.material as THREE.MeshBasicMaterial).color.set(0xf59e0b); // Orange hover
+          handle.scale.set(1.6, 1.6, 1.6);
         }
       });
     } else if (type === 'EDGE') {
@@ -848,14 +869,16 @@ export class MeshEditor {
       this.hoverHelper = null;
     }
 
-    // Reset vertex handle colors (except the selected one, which stays cyan)
+    // Reset vertex handle colors and scale (except the selected one, which stays cyan and scaled up)
     this.vertexHandlesGroup.children.forEach(child => {
       const handle = child as THREE.Mesh;
       const uIdx = handle.userData.uniqueVertexIdx;
       if (this.selectedType === 'VERTEX' && this.selectedId === uIdx) {
         (handle.material as THREE.MeshBasicMaterial).color.set(0x06b6d4); // Selected Cyan
+        handle.scale.set(1.8, 1.8, 1.8);
       } else {
-        (handle.material as THREE.MeshBasicMaterial).color.set(0xfbbf24); // Inactive Amber
+        (handle.material as THREE.MeshBasicMaterial).color.set(0x64748b); // Inactive Slate Gray
+        handle.scale.set(1, 1, 1);
       }
     });
   }
@@ -878,19 +901,21 @@ export class MeshEditor {
   private applyGizmoTransform() {
     if (!this.targetMesh || this.affectedUniqueVertexIds.length === 0) return;
 
-    // 1. Get delta translation and rotation from dummy object relative to start centroid
+    // 1. Get delta translation, rotation, and scale from dummy object relative to start centroid
     const localCentroid = this.selectionCentroid.clone().applyMatrix4(new THREE.Matrix4().copy(this.targetMesh.matrixWorld).invert());
     
-    // Project dummy's current world position/rotation back to local coordinates
+    // Project dummy's current world position/rotation/scale back to local coordinates
     const localDummyPos = this.dummyTransformObject.position.clone().applyMatrix4(new THREE.Matrix4().copy(this.targetMesh.matrixWorld).invert());
     const translation = new THREE.Vector3().subVectors(localDummyPos, localCentroid);
     const rotation = this.dummyTransformObject.quaternion;
+    const scale = this.dummyTransformObject.scale;
 
-    // 2. Apply transformations to vertices
+    // 2. Apply transformations to vertices (Scale relative to centroid, then Rotate, then Translate)
     this.affectedUniqueVertexIds.forEach(id => {
       const initPos = this.initialVertexPositions[id];
       const newPos = initPos.clone()
         .sub(localCentroid)
+        .multiply(scale)
         .applyQuaternion(rotation)
         .add(localCentroid)
         .add(translation);
@@ -920,12 +945,13 @@ export class MeshEditor {
         if (face.uniqueVertexIds.length >= 4) {
           
           // 1. Choose three reference anchor vertices of the face
-          // To make it stable, we try to select vertices that were NOT modified by the current drag
-          let anchorIds = face.uniqueVertexIds.filter(id => !this.affectedUniqueVertexIds.includes(id));
+          // Prioritize modified vertices as anchors to make the face plane follow the user's deformation,
+          // then fill the remaining anchors with unmodified vertices of the face.
+          let anchorIds = face.uniqueVertexIds.filter(id => this.affectedUniqueVertexIds.includes(id));
           
-          // If all or too many vertices were modified, just take the first three vertices
           if (anchorIds.length < 3) {
-            anchorIds = face.uniqueVertexIds.slice(0, 3);
+            const unmodifiedIds = face.uniqueVertexIds.filter(id => !this.affectedUniqueVertexIds.includes(id));
+            anchorIds = anchorIds.concat(unmodifiedIds).slice(0, 3);
           } else {
             anchorIds = anchorIds.slice(0, 3);
           }
